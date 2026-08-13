@@ -1,8 +1,45 @@
 # forward_layouts.jl — Paired / in-batch / candidate MaxSim.
 #
-# `Array` composes tiled pair GEMM over views (no slice copies). Other
-# backends launch one fused kernel over the layout; scores and argmax stay
-# on the feature backend.
+# Paired/candidates: `Array` composes tiled pair GEMM; other backends use fused
+# token kernels. In-batch: chunked doc GEMM (`D'Q`) + light argmax accumulate —
+# never a `Tq×Bd×Bq` fused similarity kernel (pathological at train batch sizes).
+
+"""Target bytes for one in-batch GEMM tile (`Td × C × Tq × Bq`)."""
+const INBATCH_TILE_BYTES = 64 * 1024 * 1024
+
+function inbatch_doc_chunk(Td::Int, Tq::Int, Bq::Int, Bd::Int)
+    Bd <= 0 && return 1
+    denom = 4 * max(Td, 1) * max(Tq, 1) * max(Bq, 1)
+    c = max(1, INBATCH_TILE_BYTES ÷ denom)
+    min(Bd, c)
+end
+
+function inbatch_accumulate_host!(S::AbstractMatrix{T},
+                                  args::AbstractArray{Int32,3},
+                                  M4::AbstractArray{T,4},
+                                  qmask::AbstractMatrix{Bool},
+                                  dm::AbstractMatrix{Bool},
+                                  j0::Int) where {T<:AbstractFloat}
+    Td, C, Tq, Bq = size(M4)
+    @inbounds for i in 1:Bq, c in 1:C, t in 1:Tq
+        qmask[t, i] || continue
+        mx = zero(T)
+        arg = Int32(0)
+        for u in 1:Td
+            dm[u, c] || continue
+            s = M4[u, c, t, i]
+            if arg == Int32(0) || s > mx
+                mx = s
+                arg = Int32(u)
+            end
+        end
+        arg == Int32(0) && continue
+        j = j0 + c - 1
+        args[t, j, i] = arg
+        S[j, i] += mx
+    end
+    nothing
+end
 
 function paired_forward(Q::Array{T,3}, D::Array{T,3},
                         qmask::AbstractMatrix{Bool},
@@ -37,37 +74,42 @@ function paired_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
     vec(sum(partial; dims = 1)), args
 end
 
-function inbatch_forward(Q::Array{T,3}, D::Array{T,3},
-                         qmask::AbstractMatrix{Bool},
-                         dmask::AbstractMatrix{Bool},
-                         neg::T) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
-    Bq, Bd = size(Q, 3), size(D, 3)
-    Tq = size(Q, 2)
-    S = zeros(T, Bd, Bq)
-    args = zeros(Int32, Tq, Bd, Bq)
-    @inbounds for j in 1:Bd, i in 1:Bq
-        s, au = pair_forward_host(view(Q, :, :, i), view(D, :, :, j),
-                                  view(qmask, :, i), view(dmask, :, j), neg)
-        S[j, i] = s
-        args[:, j, i] .= au
-    end
-    S, args
-end
-
 function inbatch_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                          qmask::AbstractMatrix{Bool},
                          dmask::AbstractMatrix{Bool},
                          neg::T) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
-    Bq, Bd = size(Q, 3), size(D, 3)
-    Tq = size(Q, 2)
-    backend = get_backend(Q)
+    dim, Tq, Bq = size(Q)
+    Td, Bd = size(D, 2), size(D, 3)
+    size(D, 1) == dim || throw(DimensionMismatch("feature dim"))
+    size(qmask) == (Tq, Bq) || throw(DimensionMismatch("qmask"))
+    size(dmask) == (Td, Bd) || throw(DimensionMismatch("dmask"))
+
+    S = zeros_like(Q, T, Bd, Bq)
     args = zeros_like(Q, Int32, Tq, Bd, Bq)
-    partial = zeros_like(Q, T, Tq, Bd, Bq)
-    launch!(inbatch_token_kernel!, backend, (Tq, Bd, Bq),
-            args, partial, Q, D, qmask, dmask, neg)
-    dropdims(sum(partial; dims = 1); dims = 1), args
+    (Bd == 0 || Bq == 0 || Tq == 0 || Td == 0) && return S, args
+
+    Qmat = reshape(Q, dim, Tq * Bq)
+    chunk = inbatch_doc_chunk(Td, Tq, Bq, Bd)
+    backend = get_backend(Q)
+    use_host = Q isa Array && D isa Array
+
+    for j0 in 1:chunk:Bd
+        j1 = min(j0 + chunk - 1, Bd)
+        C = j1 - j0 + 1
+        Dc = D[:, :, j0:j1]
+        A = reshape(Dc, dim, Td * C)
+        M = A' * Qmat
+        M4 = reshape(M, Td, C, Tq, Bq)
+        dm = dmask[:, j0:j1]
+        if use_host
+            inbatch_accumulate_host!(S, args, M4, qmask, dm, j0)
+        else
+            launch!(inbatch_accumulate_kernel!, backend, (Tq, C, Bq),
+                    S, args, M4, qmask, dm, Int32(j0))
+        end
+    end
+    S, args
 end
 
 function candidates_forward(Q::Array{T,3},

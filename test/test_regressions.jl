@@ -62,6 +62,29 @@ end
         InvGrid(), dd, q, δ, Int32[1, 2])
 end
 
+@testset "empty doc does not emit neg into the sum" begin
+    Random.seed!(11)
+    T = Float32
+    q = randn(T, 8, 5)
+    d = randn(T, 8, 6)
+    qm = trues(5)
+    dm = falses(6)
+    neg = MaxSim{T}().neg
+    @test maxsim(q, d, qm, dm) == zero(T)
+    @test maxsim(q, d, qm, dm; normalize = true) == zero(T)
+    @test maxsim_dense(q, d, qm, dm) == zero(T)
+    @test maxsim(q, d, qm, dm) != neg
+
+    Q = randn(T, 8, 5, 3)
+    D = randn(T, 8, 6, 3)
+    qmb, dmb = trues(5, 3), falses(6, 3)
+    S = maxsim(Q, D, qmb, dmb, InBatch(); normalize = true)
+    @test all(iszero, S)
+    @test all(isfinite, S)
+    # InfoNCE-scale: normalized empty scores must not be −1e4
+    @test maximum(abs, S) < T(1)
+end
+
 @testset "host DOC_TILE GEMM vs dense" begin
     Random.seed!(8)
     T = Float32

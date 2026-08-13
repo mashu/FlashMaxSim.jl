@@ -1,6 +1,6 @@
 name = "FlashMaxSim"
 uuid = "33a56d5a-c551-4f03-a19e-833338999dff"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Mateusz Kaduk"]
 
 [deps]

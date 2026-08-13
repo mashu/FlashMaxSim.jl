@@ -37,7 +37,8 @@ function pair_forward_host(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     end
     score = zero(T)
     @inbounds for t in 1:Tq
-        qmask[t] && (score += mx[t])
+        # Empty doc (no dmask hit) leaves argmax 0 — do not add `neg`.
+        qmask[t] && argmax_u[t] > 0 && (score += mx[t])
     end
     score, argmax_u
 end
