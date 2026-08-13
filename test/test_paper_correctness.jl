@@ -20,6 +20,8 @@ end
             gq, gd = gradient((q, d) -> maxsim(cfg, q, d, qm, dm), q, d)
             @test cosine(gq, gq_ref) ≥ 0.999
             @test cosine(gd, gd_ref) ≥ 0.999
+            @test 0.99 ≤ relnorm(gq, gq_ref) ≤ 1.01
+            @test 0.99 ≤ relnorm(gd, gd_ref) ≤ 1.01
         end
         cfg_a = MaxSim{T}(T(-1.0f4), false, AtomicUnified())
         cfg_i = MaxSim{T}(T(-1.0f4), false, InvGrid())
@@ -43,6 +45,8 @@ end
     gq, gd = gradient((q, d) -> maxsim(cfg, q, d, qm, dm), q, d)
     @test cosine(gq, gq_ref) ≥ 0.999
     @test cosine(gd, gd_ref) ≥ 0.999
+    @test 0.99 ≤ relnorm(gq, gq_ref) ≤ 1.01
+    @test 0.99 ≤ relnorm(gd, gd_ref) ≤ 1.01
 end
 
 @testset "inverse-grid CSR roundtrip" begin

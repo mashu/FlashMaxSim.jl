@@ -1,7 +1,8 @@
 # forward_pair.jl — Fused single-pair MaxSim (paper Alg. 1).
 #
-# Host path tiles document tokens (`DOC_TILE`). KA path: one work-item per
-# query token. Contract: `q`, `d`, masks colocated.
+# Host path tiles document tokens (`DOC_TILE`) and scores each tile with a
+# GEMM into `(tile × Tq)` scratch. KA path: one work-item per query token
+# (no on-chip document reuse). Contract: `q`, `d`, masks colocated.
 
 const DOC_TILE = 64
 
@@ -14,29 +15,30 @@ function pair_forward_host(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     length(qmask) == Tq || throw(DimensionMismatch("qmask"))
     length(dmask) == Td || throw(DimensionMismatch("dmask"))
     argmax_u = zeros(Int32, Tq)
-    score = zero(T)
-    @inbounds for t in 1:Tq
-        qmask[t] || continue
-        mx = neg
-        arg = Int32(0)
-        u = 1
-        while u <= Td
-            u_end = min(u + DOC_TILE - 1, Td)
-            for uu in u:u_end
-                dmask[uu] || continue
-                s = zero(T)
-                @simd for k in 1:dim
-                    s += q[k, t] * d[k, uu]
-                end
-                if s > mx
-                    mx = s
-                    arg = Int32(uu)
+    mx = fill(neg, Tq)
+    tile = min(DOC_TILE, max(Td, 1))
+    Stile = Matrix{T}(undef, tile, Tq)
+    u = 1
+    while u <= Td
+        u_end = min(u + DOC_TILE - 1, Td)
+        w = u_end - u + 1
+        mul!(view(Stile, 1:w, :), transpose(view(d, :, u:u_end)), q)
+        @inbounds for t in 1:Tq
+            qmask[t] || continue
+            for uu in 1:w
+                dmask[u + uu - 1] || continue
+                s = Stile[uu, t]
+                if s > mx[t]
+                    mx[t] = s
+                    argmax_u[t] = Int32(u + uu - 1)
                 end
             end
-            u = u_end + 1
         end
-        argmax_u[t] = arg
-        score += mx
+        u = u_end + 1
+    end
+    score = zero(T)
+    @inbounds for t in 1:Tq
+        qmask[t] && (score += mx[t])
     end
     score, argmax_u
 end

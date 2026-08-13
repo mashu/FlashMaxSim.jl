@@ -12,6 +12,7 @@ module FlashMaxSim
 
 using ChainRulesCore
 using KernelAbstractions
+using LinearAlgebra
 
 export MaxSim, InBatch, BackwardStrategy, AtomicUnified, InvGrid
 export maxsim, maxsim_dense

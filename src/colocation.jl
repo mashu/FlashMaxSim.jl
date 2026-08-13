@@ -20,3 +20,6 @@ function require_colocated(xs::AbstractArray...)
     end
     nothing
 end
+
+ChainRulesCore.@non_differentiable true_mask(::AbstractArray, ::Integer...)
+ChainRulesCore.@non_differentiable require_colocated(::AbstractArray...)

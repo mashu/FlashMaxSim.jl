@@ -33,3 +33,17 @@ function length_normalize(scores::AbstractMatrix{T},
     end
     out
 end
+
+"""Length-normalize candidate scores; invalid `idxs` keep `neg` (not `neg / n_q`)."""
+function length_normalize_candidates(scores::AbstractMatrix{T},
+                                     qmask::AbstractMatrix{Bool},
+                                     idxs::AbstractMatrix{<:Integer},
+                                     n_gallery::Integer,
+                                     neg::T) where {T}
+    out = length_normalize(scores, qmask)
+    @inbounds for b in 1:size(idxs, 2), c in 1:size(idxs, 1)
+        j = Int(idxs[c, b])
+        (1 <= j <= n_gallery) || (out[c, b] = neg)
+    end
+    out
+end

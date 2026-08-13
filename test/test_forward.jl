@@ -44,6 +44,9 @@ end
     @test Sc[1, 1] ≈ maxsim(Q[:, :, 1], gallery[:, :, 1]) rtol=1e-5
     @test Sc[3, 1] == MaxSim{T}().neg
     @test Sc ≈ maxsim_dense(Q, gallery, idxs, trues(Tq, B), trues(Td, 12)) rtol=1e-5
+    Scn = maxsim(Q, gallery, idxs; normalize = true)
+    @test Scn[3, 1] == MaxSim{T}().neg
+    @test Scn ≈ maxsim_dense(Q, gallery, idxs, trues(Tq, B), trues(Td, 12); normalize = true) rtol=1e-5
 end
 
 @testset "MaxSim callable + Float64" begin

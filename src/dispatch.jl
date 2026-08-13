@@ -110,7 +110,9 @@ function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, gallery::AbstractArray{T,
                 dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     require_colocated(Q, gallery, qmask, dmask)
     S, _ = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
-    out = cfg.normalize ? length_normalize(S, host_bool(qmask)) : S
+    out = cfg.normalize ?
+          length_normalize_candidates(S, host_bool(qmask), idxs, size(gallery, 3), cfg.neg) :
+          S
     match_storage(Q, out)
 end
 

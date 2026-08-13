@@ -1,10 +1,27 @@
 # rrule.jl — Sparse ChainRules (argmax taped; no dense S).
+#
+# Cotangent conversion is closed: AbstractZero / Real / AbstractArray, then one
+# unthunk hop. The previous generic fallback called itself on ZeroTangent
+# (unthunk is the identity) and overflowed the stack.
 
 as_array_cotangent(::Type{T}, Δ::AbstractArray, sz) where {T} =
     convert(Array{T}, Array(Δ))
 as_array_cotangent(::Type{T}, Δ::Real, sz) where {T} = fill(T(Δ), sz...)
-as_array_cotangent(::Type{T}, Δ, sz) where {T} =
-    as_array_cotangent(T, ChainRulesCore.unthunk(Δ), sz)
+as_array_cotangent(::Type{T}, ::ChainRulesCore.AbstractZero, sz) where {T} =
+    zeros(T, sz...)
+function as_array_cotangent(::Type{T}, Δ, sz) where {T}
+    u = ChainRulesCore.unthunk(Δ)
+    u === Δ && throw(ArgumentError("unsupported MaxSim cotangent type $(typeof(Δ))"))
+    as_array_cotangent(T, u, sz)
+end
+
+as_scalar_cotangent(::Type{T}, Δ::Real) where {T} = T(Δ)
+as_scalar_cotangent(::Type{T}, ::ChainRulesCore.AbstractZero) where {T} = zero(T)
+function as_scalar_cotangent(::Type{T}, Δ) where {T}
+    u = ChainRulesCore.unthunk(Δ)
+    u === Δ && throw(ArgumentError("unsupported MaxSim cotangent type $(typeof(Δ))"))
+    as_scalar_cotangent(T, u)
+end
 
 function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               q::AbstractMatrix{T}, d::AbstractMatrix{T},
@@ -15,7 +32,7 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     inv_n = cfg.normalize ? (one(T) / T(max(count(host_bool(qmask)), 1))) : one(T)
     score_out = score * inv_n
     function pullback(Δ)
-        δ = T(ChainRulesCore.unthunk(Δ)) * inv_n
+        δ = as_scalar_cotangent(T, Δ) * inv_n
         dq, dd = pair_pullback(δ, q, d, qmask, argmax_u, cfg.backward)
         (NoTangent(), NoTangent(), dq, dd, NoTangent(), NoTangent())
     end
@@ -68,7 +85,8 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     S, args = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
     qmh = host_bool(qmask)
     inv_n = inv_token_counts(qmh, T, cfg.normalize)
-    Sn = cfg.normalize ? length_normalize(S, qmh) : S
+    Sn = cfg.normalize ?
+         length_normalize_candidates(S, qmh, idxs, size(gallery, 3), cfg.neg) : S
     Sout = match_storage(Q, Sn)
     function pullback(Δ)
         Δh = as_array_cotangent(T, Δ, size(S))

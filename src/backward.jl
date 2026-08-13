@@ -16,11 +16,13 @@ function pair_pullback(δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
     dd = zeros(T, size(dh))
     (!isfinite(δ) || δ == zero(T)) && return upload_like(q, dq), upload_like(d, dd)
     dim, Tq = size(qh)
+    Td = size(dh, 2)
+    length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
     δ_src = zeros(T, Tq)
     @inbounds for t in 1:Tq
         qmh[t] || continue
         u = Int(argmax_u[t])
-        u < 1 && continue
+        (1 <= u <= Td) || continue
         δ_src[t] = δ
         @simd for k in 1:dim
             dq[k, t] += δ * dh[k, u]
@@ -32,9 +34,9 @@ end
 
 function paired_pullback(Δ::AbstractVector{T}, Q, D, qmask, args, inv_n,
                          mode::BackwardStrategy) where {T}
-    dQ = zeros(T, size(Array(Q)))
-    dD = zeros(T, size(Array(D)))
     Qh, Dh = Array(Q), Array(D)
+    dQ = zeros(T, size(Qh))
+    dD = zeros(T, size(Dh))
     qmh = host_bool(qmask)
     B = size(Qh, 3)
     @inbounds for b in 1:B
@@ -55,6 +57,7 @@ function inbatch_pullback(Δ::AbstractMatrix{T}, Q, D, qmask, args, inv_n,
     dD = zeros(T, size(Dh))
     Bd, Bq = size(Δ)
     dim, Tq, _ = size(Qh)
+    Td = size(Dh, 2)
     @inbounds for j in 1:Bd, i in 1:Bq
         δ = T(Δ[j, i]) * inv_n[i]
         (!isfinite(δ) || δ == zero(T)) && continue
@@ -62,7 +65,7 @@ function inbatch_pullback(Δ::AbstractMatrix{T}, Q, D, qmask, args, inv_n,
         for t in 1:Tq
             qmh[t, i] || continue
             u = Int(args[t, j, i])
-            u < 1 && continue
+            (1 <= u <= Td) || continue
             δ_src[t] = δ
             for k in 1:dim
                 dQ[k, t, i] += δ * Dh[k, u, j]
@@ -82,6 +85,7 @@ function candidates_pullback(Δ::AbstractMatrix{T}, Q, gallery, idxs, qmask, arg
     dG = zeros(T, size(Gh))
     C, B = size(Δ)
     dim, Tq, _ = size(Qh)
+    Td = size(Gh, 2)
     N = size(Gh, 3)
     @inbounds for b in 1:B, c in 1:C
         j = Int(idxs[c, b])
@@ -92,7 +96,7 @@ function candidates_pullback(Δ::AbstractMatrix{T}, Q, gallery, idxs, qmask, arg
         for t in 1:Tq
             qmh[t, b] || continue
             u = Int(args[t, c, b])
-            u < 1 && continue
+            (1 <= u <= Td) || continue
             δ_src[t] = δ
             for k in 1:dim
                 dQ[k, t, b] += δ * Gh[k, u, j]

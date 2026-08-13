@@ -1,10 +1,4 @@
 @testset "CUDA (KernelAbstractions backend)" begin
-    try
-        using CUDA
-    catch
-        @info "CUDA not loadable — skip"
-        return
-    end
     CUDA.functional() || return
     CUDA.allowscalar(false)
 
@@ -24,7 +18,7 @@
     @test s_gpu ≈ s_cpu rtol=1e-4 atol=1e-4
 
     @test_throws ArgumentError maxsim(qg, dg, qm, dm)
-    @test Array(maxsim(qg, dg)) ≈ s_cpu rtol=1e-4 atol=1e-4
+    @test maxsim(qg, dg) ≈ s_cpu rtol=1e-4 atol=1e-4
 
     Q = randn(T, dim, Tq, 3)
     D = randn(T, dim, Td, 3)
