@@ -1,0 +1,26 @@
+name = "FlashMaxSim"
+uuid = "33a56d5a-c551-4f03-a19e-833338999dff"
+version = "0.1.0"
+authors = ["Mateusz Kaduk"]
+
+[deps]
+ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
+[compat]
+CUDA = "5"
+ChainRulesCore = "1"
+KernelAbstractions = "0.9"
+LinearAlgebra = "1"
+Zygote = "0.7"
+julia = "1.10"
+
+[extras]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
+
+[targets]
+test = ["Test", "Random", "Zygote", "CUDA"]

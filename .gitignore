@@ -1,0 +1,7 @@
+*.jl.*.cov
+*.cov
+lcov.info
+Manifest.toml
+docs/build/
+docs/site/
+.DS_Store
