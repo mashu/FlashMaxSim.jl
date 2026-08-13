@@ -73,3 +73,27 @@ end
     @test maxsim(q, d, qm, dm; normalize = true) ≈
           maxsim_dense(q, d, qm, dm; normalize = true) rtol=1e-5 atol=1e-5
 end
+
+@testset "KA CPU kernels match BLAS host (same atol)" begin
+    Random.seed!(9)
+    T = Float32
+    q = randn(T, 16, 12)
+    d = randn(T, 16, 20)
+    qm = collect(isodd(t) for t in 1:12)
+    dm = collect(t % 3 != 0 for t in 1:20)
+    neg = T(-1.0f4)
+    s_h, arg_h = FlashMaxSim.pair_forward_host(q, d, qm, dm, neg)
+    s_k, arg_k = FlashMaxSim.pair_forward_ka(q, d, qm, dm, neg)
+    @test s_k ≈ s_h rtol=1e-5 atol=1e-5
+    @test arg_k == arg_h
+    @test s_k ≈ maxsim_dense(q, d, qm, dm) rtol=1e-5 atol=1e-5
+
+    δ = T(1.5)
+    backend = KernelAbstractions.CPU()
+    for mode in (AtomicUnified(), InvGrid())
+        dq_s, dd_s = FlashMaxSim.pair_pullback(backend, δ, q, d, qm, arg_h, mode)
+        dq_k, dd_k = FlashMaxSim.pair_pullback_ka(backend, δ, q, d, qm, arg_k, mode)
+        @test dq_k ≈ dq_s rtol=1e-5 atol=1e-5
+        @test dd_k ≈ dd_s rtol=1e-5 atol=1e-5
+    end
+end

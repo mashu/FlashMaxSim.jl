@@ -7,10 +7,10 @@ Concrete singletons: [`AtomicUnified`](@ref), [`InvGrid`](@ref).
 """
 abstract type BackwardStrategy end
 
-"""Destination scatter for ``∇D`` (host sequential; paper atomic-unified)."""
+"""Source-parallel ``∇D`` scatter (atomics on GPU; sequential on CPU)."""
 struct AtomicUnified <: BackwardStrategy end
 
-"""Inverse-grid CSR, destination-owned, atomic-free (paper §4.2.2)."""
+"""Destination-owned ``∇D`` (CSR on CPU; dest-parallel scan on GPU)."""
 struct InvGrid <: BackwardStrategy end
 
 """

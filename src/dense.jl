@@ -11,17 +11,22 @@ function maxsim_dense(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                       dmask::AbstractVector{Bool} = true_mask(d, size(d, 2));
                       neg::T = T(-1.0f4),
                       normalize::Bool = false) where {T<:AbstractFloat}
-    S = Matrix{T}(d' * q)  # (Td, Tq) — intentionally materialized
+    qh, dh = Array(q), Array(d)
+    qmh, dmh = Array(qmask), Array(dmask)
+    S = Matrix{T}(dh' * qh)  # (Td, Tq) — host oracle, intentionally materialized
     Td, Tq = size(S)
     score = zero(T)
     nq = 0
     @inbounds for t in 1:Tq
-        qmask[t] || continue
+        qmh[t] || continue
         mx = neg
+        hit = false
         for u in 1:Td
-            dmask[u] || continue
+            dmh[u] || continue
+            hit = true
             mx = max(mx, S[u, t])
         end
+        hit || continue
         score += mx
         nq += 1
     end

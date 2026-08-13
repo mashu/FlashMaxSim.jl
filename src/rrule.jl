@@ -1,18 +1,18 @@
 # rrule.jl — Sparse ChainRules (argmax taped; no dense S).
 #
-# Cotangent conversion is closed: AbstractZero / Real / AbstractArray, then one
-# unthunk hop. The previous generic fallback called itself on ZeroTangent
-# (unthunk is the identity) and overflowed the stack.
+# Cotangents stay on the primal score's backend. AbstractZero / Real /
+# AbstractArray, then one unthunk hop — never recurse on ZeroTangent.
 
-as_array_cotangent(::Type{T}, Δ::AbstractArray, sz) where {T} =
-    convert(Array{T}, Array(Δ))
-as_array_cotangent(::Type{T}, Δ::Real, sz) where {T} = fill(T(Δ), sz...)
-as_array_cotangent(::Type{T}, ::ChainRulesCore.AbstractZero, sz) where {T} =
-    zeros(T, sz...)
-function as_array_cotangent(::Type{T}, Δ, sz) where {T}
+as_array_cotangent(::Type{T}, Δ::AbstractArray, prototype::AbstractArray) where {T} =
+    copyto!(similar(prototype, T), Δ)
+as_array_cotangent(::Type{T}, Δ::Real, prototype::AbstractArray) where {T} =
+    fill!(similar(prototype, T), T(Δ))
+as_array_cotangent(::Type{T}, ::ChainRulesCore.AbstractZero, prototype::AbstractArray) where {T} =
+    fill!(similar(prototype, T), zero(T))
+function as_array_cotangent(::Type{T}, Δ, prototype::AbstractArray) where {T}
     u = ChainRulesCore.unthunk(Δ)
     u === Δ && throw(ArgumentError("unsupported MaxSim cotangent type $(typeof(Δ))"))
-    as_array_cotangent(T, u, sz)
+    as_array_cotangent(T, u, prototype)
 end
 
 as_scalar_cotangent(::Type{T}, Δ::Real) where {T} = T(Δ)
@@ -29,7 +29,7 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
     require_colocated(q, d, qmask, dmask)
     score, argmax_u = pair_forward(q, d, qmask, dmask, cfg.neg)
-    inv_n = cfg.normalize ? (one(T) / T(max(count(host_bool(qmask)), 1))) : one(T)
+    inv_n = cfg.normalize ? (one(T) / T(query_count(qmask))) : one(T)
     score_out = score * inv_n
     function pullback(Δ)
         δ = as_scalar_cotangent(T, Δ) * inv_n
@@ -45,16 +45,14 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
     scores, args = paired_forward(Q, D, qmask, dmask, cfg.neg)
-    qmh = host_bool(qmask)
-    inv_n = inv_token_counts(qmh, T, cfg.normalize)
-    scores_n = cfg.normalize ? length_normalize(scores, qmh) : scores
-    Sout = match_storage(Q, scores_n)
+    inv_n = inv_token_counts(qmask, T, cfg.normalize)
+    scores_n = cfg.normalize ? length_normalize(scores, qmask) : scores
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, size(scores))
-        dQ, dD = paired_pullback(vec(Δh), Q, D, qmh, args, inv_n, cfg.backward)
+        Δh = as_array_cotangent(T, Δ, scores_n)
+        dQ, dD = paired_pullback(Δh, Q, D, qmask, args, inv_n, cfg.backward)
         (NoTangent(), NoTangent(), dQ, dD, NoTangent(), NoTangent())
     end
-    Sout, pullback
+    scores_n, pullback
 end
 
 function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
@@ -64,16 +62,14 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               ::InBatch) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
     S, args = inbatch_forward(Q, D, qmask, dmask, cfg.neg)
-    qmh = host_bool(qmask)
-    inv_n = inv_token_counts(qmh, T, cfg.normalize)
-    Sn = cfg.normalize ? length_normalize(S, qmh) : S
-    Sout = match_storage(Q, Sn)
+    inv_n = inv_token_counts(qmask, T, cfg.normalize)
+    Sn = cfg.normalize ? length_normalize(S, qmask) : S
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, size(S))
-        dQ, dD = inbatch_pullback(Δh, Q, D, qmh, args, inv_n, cfg.backward)
+        Δh = as_array_cotangent(T, Δ, Sn)
+        dQ, dD = inbatch_pullback(Δh, Q, D, qmask, args, inv_n, cfg.backward)
         (NoTangent(), NoTangent(), dQ, dD, NoTangent(), NoTangent(), NoTangent())
     end
-    Sout, pullback
+    Sn, pullback
 end
 
 function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
@@ -83,15 +79,13 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     require_colocated(Q, gallery, qmask, dmask)
     S, args = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
-    qmh = host_bool(qmask)
-    inv_n = inv_token_counts(qmh, T, cfg.normalize)
+    inv_n = inv_token_counts(qmask, T, cfg.normalize)
     Sn = cfg.normalize ?
-         length_normalize_candidates(S, qmh, idxs, size(gallery, 3), cfg.neg) : S
-    Sout = match_storage(Q, Sn)
+         length_normalize_candidates(S, qmask, idxs, size(gallery, 3), cfg.neg) : S
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, size(S))
-        dQ, dG = candidates_pullback(Δh, Q, gallery, idxs, qmh, args, inv_n, cfg.backward)
+        Δh = as_array_cotangent(T, Δ, Sn)
+        dQ, dG = candidates_pullback(Δh, Q, gallery, idxs, qmask, args, inv_n, cfg.backward)
         (NoTangent(), NoTangent(), dQ, dG, NoTangent(), NoTangent(), NoTangent())
     end
-    Sout, pullback
+    Sn, pullback
 end

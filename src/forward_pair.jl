@@ -1,8 +1,7 @@
 # forward_pair.jl — Fused single-pair MaxSim (paper Alg. 1).
 #
-# Host path tiles document tokens (`DOC_TILE`) and scores each tile with a
-# GEMM into `(tile × Tq)` scratch. KA path: one work-item per query token
-# (no on-chip document reuse). Contract: `q`, `d`, masks colocated.
+# `Array` uses BLAS GEMM over document tiles (`DOC_TILE × Tq` scratch).
+# Other backends keep argmax and partials on-device via KernelAbstractions.
 
 const DOC_TILE = 64
 
@@ -43,33 +42,6 @@ function pair_forward_host(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     score, argmax_u
 end
 
-@kernel function pair_token_kernel!(argmax_out, partial,
-                                    q, d, qmask, dmask, neg, dim, Td)
-    t = @index(Global)
-    Tq = size(q, 2)
-    if t <= Tq
-        mx = neg
-        arg = Int32(0)
-        if @inbounds qmask[t]
-            @inbounds for u in 1:Td
-                dmask[u] || continue
-                s = zero(eltype(q))
-                for k in 1:dim
-                    s += q[k, t] * d[k, u]
-                end
-                if s > mx
-                    mx = s
-                    arg = Int32(u)
-                end
-            end
-            @inbounds partial[t] = mx
-        else
-            @inbounds partial[t] = zero(eltype(q))
-        end
-        @inbounds argmax_out[t] = arg
-    end
-end
-
 function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                          qmask::AbstractVector{Bool},
                          dmask::AbstractVector{Bool},
@@ -81,13 +53,10 @@ function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     length(qmask) == Tq || throw(DimensionMismatch("qmask"))
     length(dmask) == Td || throw(DimensionMismatch("dmask"))
     size(d, 1) == dim || throw(DimensionMismatch("feature dim"))
-    argmax_u = KernelAbstractions.zeros(backend, Int32, Tq)
-    partial = KernelAbstractions.zeros(backend, T, Tq)
-    kernel! = pair_token_kernel!(backend)
-    kernel!(argmax_u, partial, q, d, qmask, dmask, neg, dim, Td; ndrange = Tq)
-    KernelAbstractions.synchronize(backend)
-    score = sum(Array(partial))
-    score, Array(argmax_u)
+    argmax_u = zeros_like(q, Int32, Tq)
+    partial = zeros_like(q, T, Tq)
+    launch!(pair_token_kernel!, backend, Tq, argmax_u, partial, q, d, qmask, dmask, neg)
+    sum(partial), argmax_u
 end
 
 pair_forward(q::Array{T}, d::Array{T},

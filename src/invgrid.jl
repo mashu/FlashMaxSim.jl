@@ -9,13 +9,12 @@ sums): destination `u` owns `col_idx[(row_ptr[u] + 1):row_ptr[u + 1]]`.
 """
 function build_inverse_csr(argmax::AbstractVector{<:Integer}, n_dest::Integer)
     n_src = length(argmax)
-    ah = Int.(Array(argmax))
     srcs = Int[]
     dests = Int[]
     sizehint!(srcs, n_src)
     sizehint!(dests, n_src)
     @inbounds for s in 1:n_src
-        u = ah[s]
+        u = Int(argmax[s])
         (1 <= u <= n_dest) || continue
         push!(srcs, s)
         push!(dests, u)

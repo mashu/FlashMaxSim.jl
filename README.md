@@ -18,17 +18,18 @@ MaxSim(q, d) = Σ_t  max_u  ⟨q_t, d_u⟩
 
 **without materializing** the query-token × document-token similarity matrix
 (paper Algorithm 1). Training keeps only argmax indices and aggregates
-gradients with atomic-unified or inverse-grid CSR scatter (paper §4.2 /
+gradients with atomic-unified or inverse-grid scatter (paper §4.2 /
 Algorithm 2). Exact up to floating-point evaluation order (paper Prop. 1).
 
-Pair forward uses [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl)
-(CPU / CUDA / ROCm / Metal from the array backend). Batch layouts compose
-pair scoring; sparse pullbacks currently aggregate on the host.
+Forward and backward run on the **same KernelAbstractions backend** as the
+features (CPU `Array` uses BLAS-tiled GEMM; CUDA / ROCm / Metal use fused
+kernels). Scores, argmax tape, and cotangents stay on-device — no host
+round-trips of `Q` / `D`.
 
 **Contract:** features and masks must be colocated (same KA backend). Host
 `BitArray` masks are allowed with `Array` features; GPU features need
-device masks (`true_mask` / `similar`). Candidate index matrices are host
-`AbstractMatrix{<:Integer}`.
+device masks (`true_mask` / `similar`). Candidate index matrices are copied
+onto the feature backend when needed.
 
 ## Install
 
@@ -81,16 +82,16 @@ s = maxsim(qg, dg)
 
 | Paper | This package |
 |:------|:-------------|
-| Alg. 1 fused forward (no `S` in HBM) | `pair_forward` (host tiled / KA token kernel) |
+| Alg. 1 fused forward (no `S` in HBM) | `pair_forward` (BLAS tiles on `Array`; KA token kernel otherwise) |
 | Prop. 1 exactness | tests vs `maxsim_dense` |
-| §4.2 Eq. 2–3 sparse grads | ChainRules `rrule` |
-| Atomic-unified `∇D` | `backward = AtomicUnified()` (host scatter today) |
-| Inverse-grid CSR `∇D` | `backward = InvGrid()` |
+| §4.2 Eq. 2–3 sparse grads | ChainRules `rrule` on the feature backend |
+| Atomic-unified `∇D` | `backward = AtomicUnified()` (`@atomic` on GPU) |
+| Inverse-grid `∇D` | `backward = InvGrid()` (CSR on CPU; dest-parallel scan on GPU) |
 | In-batch / candidate scoring | `InBatch`, index-matrix layouts |
 
-Not ported: INT8 tensor-core path, split-`d`, Chamfer, device atomics / device
-CSR pullback. Exact FP MaxSim scores and sparse AD structure match the paper
-operator used for ColBERT training / reranking.
+Not ported: INT8 tensor-core path, split-`d`, Chamfer, CUDA shared-memory
+document tiling. Exact FP MaxSim scores and sparse AD structure match the
+paper operator used for ColBERT training / reranking.
 
 ## Design
 
@@ -98,8 +99,8 @@ operator used for ColBERT training / reranking.
 |:------|:-----|
 | `maxsim` / `MaxSim` | One verb + callable config; layout via methods |
 | `BackwardStrategy` | `AtomicUnified` / `InvGrid` via dispatch |
-| KernelAbstractions | Pair kernel backend from array type |
-| `maxsim_dense` | Materializing reference for correctness tests |
+| KernelAbstractions | Forward + backward from the array backend |
+| `maxsim_dense` | Materializing host reference for correctness tests |
 
 Loss functions (InfoNCE, hard-negative mining) belong in the caller.
 

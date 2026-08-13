@@ -13,13 +13,12 @@ function maxsim(q::AbstractMatrix{T}, d::AbstractMatrix{T},
 end
 
 function maxsim(cfg::MaxSim{T}, q::AbstractMatrix{T}, d::AbstractMatrix{T},
-
                 qmask::AbstractVector{Bool},
                 dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
     require_colocated(q, d, qmask, dmask)
     score, _ = pair_forward(q, d, qmask, dmask, cfg.neg)
     cfg.normalize || return score
-    score * (one(T) / T(max(count(host_bool(qmask)), 1)))
+    score * (one(T) / T(query_count(qmask)))
 end
 
 (cfg::MaxSim)(q::AbstractMatrix, d::AbstractMatrix) =
@@ -44,11 +43,9 @@ end
 function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                 qmask::AbstractMatrix{Bool},
                 dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
-
     require_colocated(Q, D, qmask, dmask)
     scores, _ = paired_forward(Q, D, qmask, dmask, cfg.neg)
-    out = cfg.normalize ? length_normalize(scores, host_bool(qmask)) : scores
-    match_storage(Q, out)
+    cfg.normalize ? length_normalize(scores, qmask) : scores
 end
 
 (cfg::MaxSim)(Q::AbstractArray{<:Any,3}, D::AbstractArray{<:Any,3}) =
@@ -77,8 +74,7 @@ function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                 ::InBatch) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
     S, _ = inbatch_forward(Q, D, qmask, dmask, cfg.neg)
-    out = cfg.normalize ? length_normalize(S, host_bool(qmask)) : S
-    match_storage(Q, out)
+    cfg.normalize ? length_normalize(S, qmask) : S
 end
 
 (cfg::MaxSim)(Q::AbstractArray{<:Any,3}, D::AbstractArray{<:Any,3}, ::InBatch) =
@@ -110,10 +106,8 @@ function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, gallery::AbstractArray{T,
                 dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     require_colocated(Q, gallery, qmask, dmask)
     S, _ = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
-    out = cfg.normalize ?
-          length_normalize_candidates(S, host_bool(qmask), idxs, size(gallery, 3), cfg.neg) :
-          S
-    match_storage(Q, out)
+    cfg.normalize ?
+        length_normalize_candidates(S, qmask, idxs, size(gallery, 3), cfg.neg) : S
 end
 
 (cfg::MaxSim)(Q::AbstractArray{<:Any,3}, gallery::AbstractArray{<:Any,3},

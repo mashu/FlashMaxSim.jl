@@ -1,37 +1,23 @@
-# normalize.jl — Query-length normalization (pure; Zygote-safe).
+# normalize.jl — Query-length normalization on the feature backend.
 
 """Per-batch inverse token counts (`1` when `normalize=false`)."""
 function inv_token_counts(qmask::AbstractMatrix{Bool}, ::Type{T},
                           normalize::Bool) where {T}
     B = size(qmask, 2)
-    normalize || return ones(T, B)
-    inv = Vector{T}(undef, B)
-    @inbounds for b in 1:B
-        inv[b] = one(T) / T(max(count(view(qmask, :, b)), 1))
-    end
-    inv
+    normalize || return fill!(similar(qmask, T, B), one(T))
+    n = T.(vec(sum(qmask; dims = 1)))
+    one(T) ./ max.(n, one(T))
 end
 
 """Return length-normalized scores (does not mutate `scores`)."""
 function length_normalize(scores::AbstractVector{T},
                           qmask::AbstractMatrix{Bool}) where {T}
-    out = similar(scores)
-    @inbounds for b in eachindex(scores)
-        out[b] = scores[b] / T(max(count(view(qmask, :, b)), 1))
-    end
-    out
+    scores .* inv_token_counts(qmask, T, true)
 end
 
 function length_normalize(scores::AbstractMatrix{T},
                           qmask::AbstractMatrix{Bool}) where {T}
-    out = similar(scores)
-    @inbounds for b in 1:size(scores, 2)
-        n = T(max(count(view(qmask, :, b)), 1))
-        @inbounds for c in 1:size(scores, 1)
-            out[c, b] = scores[c, b] / n
-        end
-    end
-    out
+    scores .* reshape(inv_token_counts(qmask, T, true), 1, :)
 end
 
 """Length-normalize candidate scores; invalid `idxs` keep `neg` (not `neg / n_q`)."""
@@ -41,9 +27,7 @@ function length_normalize_candidates(scores::AbstractMatrix{T},
                                      n_gallery::Integer,
                                      neg::T) where {T}
     out = length_normalize(scores, qmask)
-    @inbounds for b in 1:size(idxs, 2), c in 1:size(idxs, 1)
-        j = Int(idxs[c, b])
-        (1 <= j <= n_gallery) || (out[c, b] = neg)
-    end
-    out
+    idx = indices_on(scores, idxs)
+    valid = (idx .>= 1) .& (idx .<= n_gallery)
+    ifelse.(valid, out, neg)
 end

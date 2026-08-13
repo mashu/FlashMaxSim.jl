@@ -8,7 +8,7 @@ function scatter_query_length(dd, q, δ_per_src, argmax_u)
     Tq
 end
 
-"""Scatter ``∇D`` for one pair (Eq. 3): host sequential atomic-unified."""
+"""Scatter ``∇D`` for one pair (Eq. 3): sequential atomic-unified (CPU)."""
 function accumulate_doc!(::AtomicUnified, dd::AbstractMatrix{T},
                          q::AbstractMatrix{T},
                          δ_per_src::AbstractVector{T},
