@@ -1,11 +1,18 @@
 # ka.jl — KernelAbstractions launch and same-backend allocation.
+#
+# Kernels enqueue in order on a backend; do **not** synchronize after every
+# launch. Sync only before reading a host-visible value (`sum`, scalar index,
+# `Array(...)`) or before returning buffers that a host test will inspect.
 
+"""Enqueue a kernel. No device synchronize — see [`sync!`](@ref)."""
 function launch!(kernel, backend, ndrange, args...)
     prod(ndrange) == 0 && return nothing
     kernel(backend)(args...; ndrange)
-    KernelAbstractions.synchronize(backend)
     nothing
 end
+
+"""Block until all work queued on `backend` has finished."""
+sync!(backend) = KernelAbstractions.synchronize(backend)
 
 zeros_like(x::AbstractArray{T}) where {T} = fill!(similar(x), zero(T))
 zeros_like(x::AbstractArray, ::Type{T}, dims::Integer...) where {T} =

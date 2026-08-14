@@ -1,8 +1,11 @@
 # forward_layouts.jl — Paired / in-batch / candidate MaxSim.
 #
-# Paired/candidates: `Array` composes tiled pair GEMM; other backends use fused
-# token kernels. In-batch: chunked doc GEMM (`D'Q`) + light argmax accumulate —
-# never a `Tq×Bd×Bq` fused similarity kernel (pathological at train batch sizes).
+# Dispatch is on the *backend* (`array_backend(Q)`), not `::Array`: a host
+# `view` / `Adjoint` / `PermutedDimsArray` must take the BLAS path. Named
+# `*_forward_ka` entry points exercise device kernels on `CPU()` in CI.
+#
+# In-batch: chunked doc GEMM (`D'Q`) + light argmax accumulate — never a
+# `Tq×Bd×Bq` fused similarity kernel (pathological at train batch sizes).
 
 """Target bytes for one in-batch GEMM tile (`Td × C × Tq × Bq`)."""
 const INBATCH_TILE_BYTES = 64 * 1024 * 1024
@@ -70,7 +73,16 @@ function inbatch_accumulate_host!(S::AbstractMatrix{T},
     nothing
 end
 
-function paired_forward(Q::Array{T,3}, D::Array{T,3},
+# ---- paired ------------------------------------------------------------------
+
+function paired_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
+                        qmask::AbstractMatrix{Bool},
+                        dmask::AbstractMatrix{Bool},
+                        neg::T) where {T<:AbstractFloat}
+    paired_forward(array_backend(Q), Q, D, qmask, dmask, neg)
+end
+
+function paired_forward(::CPU, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                         qmask::AbstractMatrix{Bool},
                         dmask::AbstractMatrix{Bool},
                         neg::T) where {T<:AbstractFloat}
@@ -87,36 +99,47 @@ function paired_forward(Q::Array{T,3}, D::Array{T,3},
     scores, args
 end
 
-function paired_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
+function paired_forward(backend::Backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                         qmask::AbstractMatrix{Bool},
                         dmask::AbstractMatrix{Bool},
-                        ::T) where {T<:AbstractFloat}
+                        neg::T) where {T<:AbstractFloat}
+    paired_forward_ka(backend, Q, D, qmask, dmask, neg)
+end
+
+function paired_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
+                           qmask::AbstractMatrix{Bool},
+                           dmask::AbstractMatrix{Bool},
+                           ::T) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
     _, Tq, _, B = require_paired_shapes(Q, D, qmask, dmask)
-    backend = get_backend(Q)
     args = zeros_like(Q, Int32, Tq, B)
     partial = zeros_like(Q, T, Tq, B)
     launch!(paired_token_kernel!, backend, (Tq, B),
             args, partial, Q, D, qmask, dmask)
+    sync!(backend)   # host-visible reduction
     vec(sum(partial; dims = 1)), args
 end
 
+# ---- in-batch ----------------------------------------------------------------
+
 function inbatch_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
+                         qmask::AbstractMatrix{Bool},
+                         dmask::AbstractMatrix{Bool},
+                         neg::T) where {T<:AbstractFloat}
+    inbatch_forward(array_backend(Q), Q, D, qmask, dmask, neg)
+end
+
+function inbatch_forward(::CPU, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                          qmask::AbstractMatrix{Bool},
                          dmask::AbstractMatrix{Bool},
                          ::T) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
     dim, Tq, Bq, Td, Bd = require_inbatch_shapes(Q, D, qmask, dmask)
-
-    S = zeros_like(Q, T, Bd, Bq)
-    args = zeros_like(Q, Int32, Tq, Bd, Bq)
+    S = zeros(T, Bd, Bq)
+    args = zeros(Int32, Tq, Bd, Bq)
     (Bd == 0 || Bq == 0 || Tq == 0 || Td == 0) && return S, args
-
     Qmat = reshape(Q, dim, Tq * Bq)
     chunk = inbatch_doc_chunk(T, Td, Tq, Bq, Bd)
-    backend = get_backend(Q)
-    use_host = Q isa Array && D isa Array
-
     for j0 in 1:chunk:Bd
         j1 = min(j0 + chunk - 1, Bd)
         C = j1 - j0 + 1
@@ -125,18 +148,57 @@ function inbatch_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
         M = A' * Qmat
         M4 = reshape(M, Td, C, Tq, Bq)
         dm = dmask[:, j0:j1]
-        if use_host
-            inbatch_accumulate_host!(S, args, M4, qmask, dm, j0)
-        else
-            launch!(inbatch_accumulate_kernel!, backend, (Tq, C, Bq),
-                    S, args, M4, qmask, dm, Int32(j0))
-        end
+        inbatch_accumulate_host!(S, args, M4, qmask, dm, j0)
     end
     S, args
 end
 
-function candidates_forward(Q::Array{T,3},
-                            gallery::Array{T,3},
+function inbatch_forward(backend::Backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
+                         qmask::AbstractMatrix{Bool},
+                         dmask::AbstractMatrix{Bool},
+                         neg::T) where {T<:AbstractFloat}
+    inbatch_forward_ka(backend, Q, D, qmask, dmask, neg)
+end
+
+function inbatch_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
+                            qmask::AbstractMatrix{Bool},
+                            dmask::AbstractMatrix{Bool},
+                            ::T) where {T<:AbstractFloat}
+    require_colocated(Q, D, qmask, dmask)
+    dim, Tq, Bq, Td, Bd = require_inbatch_shapes(Q, D, qmask, dmask)
+    S = zeros_like(Q, T, Bd, Bq)
+    args = zeros_like(Q, Int32, Tq, Bd, Bq)
+    (Bd == 0 || Bq == 0 || Tq == 0 || Td == 0) && return S, args
+    Qmat = reshape(Q, dim, Tq * Bq)
+    chunk = inbatch_doc_chunk(T, Td, Tq, Bq, Bd)
+    for j0 in 1:chunk:Bd
+        j1 = min(j0 + chunk - 1, Bd)
+        C = j1 - j0 + 1
+        Dc = D[:, :, j0:j1]
+        A = reshape(Dc, dim, Td * C)
+        M = A' * Qmat
+        M4 = reshape(M, Td, C, Tq, Bq)
+        dm = dmask[:, j0:j1]
+        launch!(inbatch_accumulate_kernel!, backend, (Tq, C, Bq),
+                S, args, M4, qmask, dm, Int32(j0))
+    end
+    sync!(backend)
+    S, args
+end
+
+# ---- candidates --------------------------------------------------------------
+
+function candidates_forward(Q::AbstractArray{T,3},
+                            gallery::AbstractArray{T,3},
+                            idxs::AbstractMatrix{<:Integer},
+                            qmask::AbstractMatrix{Bool},
+                            dmask::AbstractMatrix{Bool},
+                            neg::T) where {T<:AbstractFloat}
+    candidates_forward(array_backend(Q), Q, gallery, idxs, qmask, dmask, neg)
+end
+
+function candidates_forward(::CPU, Q::AbstractArray{T,3},
+                            gallery::AbstractArray{T,3},
                             idxs::AbstractMatrix{<:Integer},
                             qmask::AbstractMatrix{Bool},
                             dmask::AbstractMatrix{Bool},
@@ -157,21 +219,30 @@ function candidates_forward(Q::Array{T,3},
     S, args
 end
 
-function candidates_forward(Q::AbstractArray{T,3},
+function candidates_forward(backend::Backend, Q::AbstractArray{T,3},
                             gallery::AbstractArray{T,3},
                             idxs::AbstractMatrix{<:Integer},
                             qmask::AbstractMatrix{Bool},
                             dmask::AbstractMatrix{Bool},
                             neg::T) where {T<:AbstractFloat}
+    candidates_forward_ka(backend, Q, gallery, idxs, qmask, dmask, neg)
+end
+
+function candidates_forward_ka(backend, Q::AbstractArray{T,3},
+                               gallery::AbstractArray{T,3},
+                               idxs::AbstractMatrix{<:Integer},
+                               qmask::AbstractMatrix{Bool},
+                               dmask::AbstractMatrix{Bool},
+                               neg::T) where {T<:AbstractFloat}
     require_colocated(Q, gallery, qmask, dmask)
     _, Tq, B, _, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
     idx = indices_on(Q, idxs)
     C = size(idx, 1)
-    backend = get_backend(Q)
     args = zeros_like(Q, Int32, Tq, C, B)
     partial = zeros_like(Q, T, Tq, C, B)
     launch!(candidates_token_kernel!, backend, (Tq, C, B),
             args, partial, Q, gallery, idx, qmask, dmask, N)
+    sync!(backend)   # host-visible reduction
     S = dropdims(sum(partial; dims = 1); dims = 1)
     valid = (idx .>= 1) .& (idx .<= N)
     ifelse.(valid, S, neg), args

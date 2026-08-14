@@ -1,11 +1,7 @@
 # Runs every KernelAbstractions kernel on the CPU backend and checks it against
-# the host reference. Without this, the paired / in-batch / candidate device
-# kernels are unreachable in CI: the host methods win on `Array` inputs, and the
-# pullbacks dispatch on `array_backend`, which is always `CPU()` on the host.
-#
-# Forward KA paths are reached by passing `view(X, :, :, :)` — a SubArray is not
-# an `Array`, so the generic method is selected, but `get_backend` still says CPU.
-# Backward KA paths are called through their `*_pullback_ka` entry points.
+# the host reference. Forward/backward KA paths are reached through named
+# `*_forward_ka` / `*_pullback_ka` entry points — backend dispatch alone always
+# selects the host methods for colocated CPU arrays (including views).
 
 @testset "KA CPU parity: all layouts" begin
     Random.seed!(2024)
@@ -23,11 +19,9 @@
     idxs = Int32[1 2 3; 4 0 5]
     inv_n = ones(T, B)
 
-    Qv, Dv, Gv = view(Q, :, :, :), view(D, :, :, :), view(G, :, :, :)
-
     @testset "paired forward" begin
         s_h, a_h = FlashMaxSim.paired_forward(Q, D, qm, dm, neg)
-        s_k, a_k = FlashMaxSim.paired_forward(Qv, Dv, qm, dm, neg)
+        s_k, a_k = FlashMaxSim.paired_forward_ka(backend, Q, D, qm, dm, neg)
         @test a_k == a_h
         @test s_k ≈ s_h rtol=1e-5 atol=1e-5
         @test s_k ≈ maxsim_dense(Q, D, qm, dm) rtol=1e-5 atol=1e-5
@@ -35,7 +29,7 @@
 
     @testset "in-batch forward" begin
         S_h, A_h = FlashMaxSim.inbatch_forward(Q, D, qm, dm, neg)
-        S_k, A_k = FlashMaxSim.inbatch_forward(Qv, Dv, qm, dm, neg)
+        S_k, A_k = FlashMaxSim.inbatch_forward_ka(backend, Q, D, qm, dm, neg)
         @test A_k == A_h
         @test S_k ≈ S_h rtol=1e-5 atol=1e-5
         @test S_k ≈ maxsim_dense(Q, D, qm, dm, InBatch()) rtol=1e-5 atol=1e-5
@@ -43,7 +37,7 @@
 
     @testset "candidates forward" begin
         S_h, A_h = FlashMaxSim.candidates_forward(Q, G, idxs, qm, dmG, neg)
-        S_k, A_k = FlashMaxSim.candidates_forward(Qv, Gv, idxs, qm, dmG, neg)
+        S_k, A_k = FlashMaxSim.candidates_forward_ka(backend, Q, G, idxs, qm, dmG, neg)
         @test A_k == A_h
         @test S_k ≈ S_h rtol=1e-5 atol=1e-5
         @test S_k[2, 2] == neg
@@ -91,11 +85,15 @@
         @test maxsim(q, d, vec(view(bm, :, 1)), trues(5)) isa T
     end
 
-    @testset "host views take the BLAS pair path" begin
+    @testset "host views take the BLAS pair / layout paths" begin
         s_view = maxsim(view(Q, :, :, 1), view(D, :, :, 1),
                         view(qm, :, 1), view(dm, :, 1))
         s_copy = maxsim(Q[:, :, 1], D[:, :, 1], qm[:, 1], dm[:, 1])
         @test s_view ≈ s_copy rtol=1e-6
+
+        # SubArray batch still hits host paired / candidates (not scalar KA)
+        Sp, _ = FlashMaxSim.paired_forward(view(Q, :, :, :), view(D, :, :, :), qm, dm, neg)
+        @test Sp ≈ maxsim(Q, D, qm, dm) rtol=1e-6
     end
 end
 
@@ -119,4 +117,17 @@ end
     @test FlashMaxSim.as_array_cotangent(T, T(2), proto1) == fill(T(2), 1)
     Δ = T[1, 2, 3]
     @test FlashMaxSim.as_array_cotangent(T, Δ, proto) == Δ
+end
+
+@testset "device CSR matches host InvGrid" begin
+    Random.seed!(2025)
+    T = Float32
+    backend = KernelAbstractions.CPU()
+    q, d = randn(T, 8, 5), randn(T, 8, 6)
+    qm, dm = trues(5), trues(6)
+    _, arg = FlashMaxSim.pair_forward_host(q, d, qm, dm, T(-1.0f4))
+    dq_h, dd_h = FlashMaxSim.pair_pullback(one(T), q, d, qm, arg, InvGrid())
+    dq_k, dd_k = FlashMaxSim.pair_pullback_ka(backend, one(T), q, d, qm, arg, InvGrid())
+    @test dq_k ≈ dq_h
+    @test dd_k ≈ dd_h
 end

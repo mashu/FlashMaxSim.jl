@@ -63,6 +63,7 @@ function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     argmax_u = zeros_like(q, Int32, Tq)
     partial = zeros_like(q, T, Tq)
     launch!(pair_token_kernel!, backend, Tq, argmax_u, partial, q, d, qmask, dmask)
+    sync!(backend)   # host-visible reduction
     sum(partial), argmax_u
 end
 

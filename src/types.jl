@@ -10,7 +10,7 @@ abstract type BackwardStrategy end
 """Source-parallel ``∇D`` scatter (atomics on GPU; sequential on CPU)."""
 struct AtomicUnified <: BackwardStrategy end
 
-"""Destination-owned ``∇D``. CPU builds a CSR (paper Algorithm 3); GPU scans every source per destination (same sum, not a constructed grid)."""
+"""Destination-owned ``∇D`` via inverse-grid CSR (paper Algorithm 3) on every KA backend."""
 struct InvGrid <: BackwardStrategy end
 
 """
