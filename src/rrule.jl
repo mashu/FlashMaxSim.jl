@@ -3,6 +3,7 @@
 # Cotangents stay on the primal score's backend. AbstractZero / Real /
 # AbstractArray, then one unthunk hop — never recurse on ZeroTangent.
 # Colocation is enforced once in the forward entry points.
+# Pair scores on GPU are length-1 device arrays (no host `sum`).
 
 function as_array_cotangent(::Type{T}, Δ::AbstractArray,
                             prototype::AbstractArray) where {T}
@@ -39,11 +40,26 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               qmask::AbstractVector{Bool},
                               dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
     score, argmax_u = pair_forward(q, d, qmask, dmask, cfg.neg)
-    inv_n = cfg.normalize ? (one(T) / T(query_count(qmask))) : one(T)
-    score_out = score * inv_n
+    score_out, inv_n = pair_finalize(score, qmask, cfg.normalize)
+    pair_rrule_pullback(score_out, inv_n, q, d, qmask, argmax_u, cfg.backward)
+end
+
+function pair_rrule_pullback(score_out::T, inv_n::T, q, d, qmask, argmax_u,
+                             mode) where {T<:AbstractFloat}
     function pullback(Δ)
         δ = as_scalar_cotangent(T, Δ) * inv_n
-        dq, dd = pair_pullback(δ, q, d, qmask, argmax_u, cfg.backward)
+        dq, dd = pair_pullback(δ, q, d, qmask, argmax_u, mode)
+        (NoTangent(), NoTangent(), dq, dd, NoTangent(), NoTangent())
+    end
+    score_out, pullback
+end
+
+function pair_rrule_pullback(score_out::AbstractVector{T}, inv_n::AbstractVector{T},
+                             q, d, qmask, argmax_u, mode) where {T<:AbstractFloat}
+    function pullback(Δ)
+        Δh = as_array_cotangent(T, Δ, score_out)
+        δ = Δh .* inv_n
+        dq, dd = pair_pullback(array_backend(q), δ, q, d, qmask, argmax_u, mode)
         (NoTangent(), NoTangent(), dq, dd, NoTangent(), NoTangent())
     end
     score_out, pullback

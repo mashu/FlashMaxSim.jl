@@ -1,28 +1,53 @@
 # ka.jl — KernelAbstractions launch and same-backend allocation.
 #
-# Kernels enqueue in order on a backend; do **not** synchronize after every
-# launch. Sync only before reading a host-visible value (`sum`, scalar index,
-# `Array(...)`) or before returning buffers that a host test will inspect.
+# Kernels enqueue in order on a backend. Do not synchronize after every launch.
+# `finish!` syncs only on CPU (KA CPU is async); GPU relies on stream ordering
+# so device→device work stays off the host.
 
-"""Enqueue a kernel. No device synchronize — see [`sync!`](@ref)."""
+"""Enqueue a kernel. No device synchronize — see [`finish!`](@ref)."""
 function launch!(kernel, backend, ndrange, args...)
     prod(ndrange) == 0 && return nothing
     kernel(backend)(args...; ndrange)
     nothing
 end
 
-"""Block until all work queued on `backend` has finished."""
+"""Block until queued work finishes (CPU KA only; no-op on GPU backends)."""
+finish!(backend::CPU) = KernelAbstractions.synchronize(backend)
+finish!(::Backend) = nothing
+
 sync!(backend) = KernelAbstractions.synchronize(backend)
 
 zeros_like(x::AbstractArray{T}) where {T} = fill!(similar(x), zero(T))
 zeros_like(x::AbstractArray, ::Type{T}, dims::Integer...) where {T} =
     fill!(similar(x, T, dims...), zero(T))
 
-"""Place `idxs` on `prototype`'s backend (no-op when already colocated)."""
+ones_like(x::AbstractArray{T}) where {T} = fill!(similar(x), one(T))
+ones_like(x::AbstractArray, ::Type{T}, dims::Integer...) where {T} =
+    fill!(similar(x, T, dims...), one(T))
+
+"""
+Require `idxs` already on `prototype`'s backend.
+
+Refuses host→device copies in the hot path — pass `CuArray(idxs)` (or equivalent).
+"""
 function indices_on(prototype::AbstractArray, idxs::AbstractMatrix{<:Integer})
     array_backend(idxs) === array_backend(prototype) && return idxs
-    out = similar(prototype, eltype(idxs), size(idxs))
-    copyto!(out, idxs)
+    throw(ArgumentError(
+        "FlashMaxSim requires idxs on the same KernelAbstractions backend as features " *
+        "(e.g. CuArray(idxs)); refusing a host→device copy in the hot path"))
+end
+
+"""On-device `sum(x)` into a length-1 buffer (no host materialization)."""
+function sum_length1(backend, x::AbstractVector{T}) where {T}
+    out = zeros_like(x, T, 1)
+    launch!(reduce_sum1_kernel!, backend, 1, out, x)
+    out
+end
+
+"""On-device `max(count(mask), 1)` as length-1 `T` buffer."""
+function count_true_length1(backend, mask::AbstractVector{Bool}, ::Type{T}) where {T}
+    out = zeros_like(mask, T, 1)
+    launch!(count_true1_kernel!, backend, 1, out, mask)
     out
 end
 

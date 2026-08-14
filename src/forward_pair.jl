@@ -1,7 +1,7 @@
 # forward_pair.jl — Fused single-pair MaxSim (paper Alg. 1).
 #
 # Host backend uses BLAS GEMM over document tiles (`DOC_TILE × Tq` scratch).
-# Other backends keep argmax and partials on-device via KernelAbstractions.
+# Other backends keep argmax and the score on-device (length-1 buffer) via KA.
 # `neg` is unused in the pair scan — it is a candidate-index sentinel only.
 #
 # Dispatch is on the *backend*, not on the concrete array type: a `view`,
@@ -79,8 +79,9 @@ function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     argmax_u = zeros_like(q, Int32, Tq)
     partial = zeros_like(q, T, Tq)
     launch!(pair_token_kernel!, backend, Tq, argmax_u, partial, q, d, qmask, dmask)
-    sync!(backend)   # host-visible reduction
-    sum(partial), argmax_u
+    score = sum_length1(backend, partial)   # length-1, same backend — no host sum
+    finish!(backend)
+    score, argmax_u
 end
 
 function pair_forward(q::AbstractMatrix{T}, d::AbstractMatrix{T},
@@ -99,3 +100,27 @@ pair_forward(::Backend, q::AbstractMatrix{T}, d::AbstractMatrix{T},
              qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
              neg::T) where {T<:AbstractFloat} =
     pair_forward_ka(q, d, qmask, dmask, neg)
+
+# ---- pair score normalize (host scalar vs device length-1) -------------------
+
+pair_finalize(score::T, qmask, ::Val{false}) where {T<:AbstractFloat} = score, one(T)
+
+function pair_finalize(score::T, qmask, ::Val{true}) where {T<:AbstractFloat}
+    inv_n = one(T) / T(query_count(qmask))
+    score * inv_n, inv_n
+end
+
+function pair_finalize(score::AbstractVector{T}, qmask, ::Val{false}) where {T<:AbstractFloat}
+    score, ones_like(score)
+end
+
+function pair_finalize(score::AbstractVector{T}, qmask, ::Val{true}) where {T<:AbstractFloat}
+    backend = array_backend(score)
+    n = count_true_length1(backend, qmask, T)
+    inv_n = one(T) ./ n
+    finish!(backend)
+    score .* inv_n, inv_n
+end
+
+pair_finalize(score, qmask, normalize::Bool) =
+    pair_finalize(score, qmask, Val(normalize))

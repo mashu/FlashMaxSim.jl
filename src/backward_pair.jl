@@ -1,8 +1,8 @@
 # backward_pair.jl — Single-pair sparse MaxSim pullback (paper §4.2, Eqs. 2–3).
 #
 # CPU: sequential gather + [`accumulate_doc!`](@ref).
-# Other KA backends: gather/scatter kernels. InvGrid uses device CSR from
-# [`build_pair_csr`](@ref). Named `pair_pullback_ka` is reachable in CI on CPU().
+# Other KA backends: gather/scatter kernels; `δ` is a length-1 device buffer
+# so the scale never forces a host round-trip. Named `pair_pullback_ka` for CI.
 
 function pair_pullback(δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
                        qmask::AbstractVector{Bool},
@@ -41,24 +41,42 @@ function pair_pullback(backend::Backend, δ::T, q::AbstractMatrix{T},
                        qmask::AbstractVector{Bool},
                        argmax_u::AbstractVector{<:Integer},
                        mode::BackwardStrategy) where {T<:AbstractFloat}
+    δv = fill!(zeros_like(q, T, 1), δ)
+    pair_pullback_ka(backend, δv, q, d, qmask, argmax_u, mode)
+end
+
+function pair_pullback(backend::Backend, δ::AbstractVector{T}, q::AbstractMatrix{T},
+                       d::AbstractMatrix{T},
+                       qmask::AbstractVector{Bool},
+                       argmax_u::AbstractVector{<:Integer},
+                       mode::BackwardStrategy) where {T<:AbstractFloat}
     pair_pullback_ka(backend, δ, q, d, qmask, argmax_u, mode)
 end
 
-function pair_pullback_ka(backend, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
+function pair_pullback_ka(backend, δ::AbstractVector{T}, q::AbstractMatrix{T},
+                          d::AbstractMatrix{T},
                           qmask::AbstractVector{Bool},
                           argmax_u::AbstractVector{<:Integer},
                           mode::BackwardStrategy) where {T<:AbstractFloat}
     dq = zeros_like(q)
     dd = zeros_like(d)
-    δ == zero(T) && return dq, dd
+    length(δ) == 1 || throw(DimensionMismatch("pair δ must be length 1"))
     dim, Tq = size(q)
     Td = size(d, 2)
     length(qmask) == Tq || throw(DimensionMismatch("qmask vs query tokens"))
     length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
     launch!(gather_pair_kernel!, backend, (dim, Tq), dq, d, qmask, argmax_u, δ, Td)
     scatter_pair!(mode, backend, dd, q, qmask, argmax_u, δ)
-    sync!(backend)
+    finish!(backend)
     dq, dd
+end
+
+# Scalar convenience for tests / CPU-KA callers
+function pair_pullback_ka(backend, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
+                          qmask::AbstractVector{Bool},
+                          argmax_u::AbstractVector{<:Integer},
+                          mode::BackwardStrategy) where {T<:AbstractFloat}
+    pair_pullback_ka(backend, fill!(zeros_like(q, T, 1), δ), q, d, qmask, argmax_u, mode)
 end
 
 scatter_pair!(::AtomicUnified, backend, dd, q, qmask, argmax_u, δ) =

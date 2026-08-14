@@ -117,8 +117,9 @@ function paired_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3}
     partial = zeros_like(Q, T, Tq, B)
     launch!(paired_token_kernel!, backend, (Tq, B),
             args, partial, Q, D, qmask, dmask)
-    sync!(backend)   # host-visible reduction
-    vec(sum(partial; dims = 1)), args
+    scores = vec(sum(partial; dims = 1))   # stays on-device for CuArray
+    finish!(backend)
+    scores, args
 end
 
 # ---- in-batch ----------------------------------------------------------------
@@ -182,7 +183,7 @@ function inbatch_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3
         launch!(inbatch_accumulate_kernel!, backend, (Tq, C, Bq),
                 S, args, M4, qmask, dm, Int32(j0))
     end
-    sync!(backend)
+    finish!(backend)
     S, args
 end
 
@@ -243,8 +244,9 @@ function candidates_forward_ka(backend, Q::AbstractArray{T,3},
     partial = zeros_like(Q, T, Tq, C, B)
     launch!(candidates_token_kernel!, backend, (Tq, C, B),
             args, partial, Q, gallery, idx, qmask, dmask, N)
-    sync!(backend)   # host-visible reduction
-    S = dropdims(sum(partial; dims = 1); dims = 1)
+    S = dropdims(sum(partial; dims = 1); dims = 1)   # on-device
     valid = (idx .>= 1) .& (idx .<= N)
-    ifelse.(valid, S, neg), args
+    out = ifelse.(valid, S, neg)
+    finish!(backend)
+    out, args
 end

@@ -15,10 +15,12 @@
     qg, dg = CuArray(q), CuArray(d)
     qmg, dmg = CuArray(collect(qm)), CuArray(collect(dm))
     s_gpu = maxsim(qg, dg, qmg, dmg)
-    @test s_gpu ≈ s_cpu rtol=1e-5 atol=1e-5
+    @test s_gpu isa CuArray
+    @test length(s_gpu) == 1
+    @test only(Array(s_gpu)) ≈ s_cpu rtol=1e-5 atol=1e-5
 
     @test_throws ArgumentError maxsim(qg, dg, qm, dm)
-    @test maxsim(qg, dg) ≈ s_cpu rtol=1e-5 atol=1e-5
+    @test only(Array(maxsim(qg, dg))) ≈ s_cpu rtol=1e-5 atol=1e-5
 
     Q = randn(T, dim, Tq, 3)
     D = randn(T, dim, Td, 3)
@@ -30,15 +32,15 @@
     @test Array(paired_g) ≈ maxsim(Q, D) rtol=1e-5 atol=1e-5
 
     cfg = MaxSim{T}(T(-1.0f4), false, InvGrid())
-    gq = gradient(x -> maxsim(cfg, x, dg, qmg, dmg), qg)[1]
+    gq = gradient(x -> sum(maxsim(cfg, x, dg, qmg, dmg)), qg)[1]
     @test gq isa CuArray
     @test all(isfinite, Array(gq))
-    gd = gradient(x -> maxsim(cfg, qg, x, qmg, dmg), dg)[1]
+    gd = gradient(x -> sum(maxsim(cfg, qg, x, qmg, dmg)), dg)[1]
     @test gd isa CuArray
     @test all(isfinite, Array(gd))
 
     cfg_a = MaxSim{T}(T(-1.0f4), false, AtomicUnified())
-    gqa = gradient(x -> maxsim(cfg_a, x, dg, qmg, dmg), qg)[1]
+    gqa = gradient(x -> sum(maxsim(cfg_a, x, dg, qmg, dmg)), qg)[1]
     @test cosine(Array(gq), Array(gqa)) ≥ 0.999
     @test 0.99 ≤ relnorm(Array(gq), Array(gqa)) ≤ 1.01
 
@@ -72,9 +74,10 @@
 
     gallery = randn(T, dim, Td, 7)
     idxs = Int32[1 2 3; 4 5 6]
+    idxg = CuArray(idxs)
     Gg = CuArray(gallery)
     dmgG = CuArray(fill(true, Td, 7))
-    gQc_gpu, gG_gpu = gradient((Q, G) -> sum(maxsim(Q, G, idxs, qmgB, dmgG)), Qg, Gg)
+    gQc_gpu, gG_gpu = gradient((Q, G) -> sum(maxsim(Q, G, idxg, qmgB, dmgG)), Qg, Gg)
     gQc_cpu, gG_cpu = gradient((Q, G) -> sum(maxsim(Q, G, idxs)), Q, gallery)
     @test gQc_gpu isa CuArray && gG_gpu isa CuArray
     @test cosine(Array(gQc_gpu), gQc_cpu) ≥ 0.999
@@ -84,6 +87,7 @@
                                             for c in 1:2, b in 1:3), Q, gallery)
     @test cosine(Array(gQc_gpu), gQc_ref) ≥ 0.999
     @test cosine(Array(gG_gpu), gG_ref) ≥ 0.999
+    @test_throws ArgumentError maxsim(Qg, Gg, idxs, qmgB, dmgG)
 
     cfg_i = MaxSim{T}(T(-1.0f4), false, InvGrid())
     gQi_mode = gradient(x -> sum(maxsim(cfg_i, x, Dg, qmgB, dmgB)), Qg)[1]
@@ -92,6 +96,6 @@
 
     neg = T(0)
     s_gpu = maxsim(qg, dg, qmg, dmg; neg)
-    @test s_gpu ≈ maxsim(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
-    @test s_gpu ≈ maxsim_dense(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
+    @test only(Array(s_gpu)) ≈ maxsim(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
+    @test only(Array(s_gpu)) ≈ maxsim_dense(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
 end

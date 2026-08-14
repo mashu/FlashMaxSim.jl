@@ -39,7 +39,7 @@ function paired_pullback_ka(backend, Δ::AbstractVector{T}, Q, D, qmask, args,
     launch!(gather_paired_kernel!, backend, (dim, Tq, B),
             dQ, D, qmask, args, Δ, inv_n, Td)
     scatter_paired!(mode, backend, dD, Q, qmask, args, Δ, inv_n)
-    sync!(backend)
+    finish!(backend)
     dQ, dD
 end
 
@@ -104,7 +104,7 @@ function inbatch_pullback_ka(backend, Δ::AbstractMatrix{T}, Q, D, qmask, args,
     launch!(gather_inbatch_kernel!, backend, (dim, Tq, Bq),
             dQ, D, qmask, args, Δ, inv_n, Td, Bd)
     scatter_inbatch!(mode, backend, dD, Q, qmask, args, Δ, inv_n)
-    sync!(backend)
+    finish!(backend)
     dQ, dD
 end
 
@@ -175,7 +175,7 @@ function candidates_pullback_ka(backend, Δ::AbstractMatrix{T}, Q, gallery, idxs
     launch!(gather_candidates_kernel!, backend, (dim, Tq, B),
             dQ, gallery, idx, qmask, args, Δ, inv_n, Td, C, N)
     scatter_candidates!(mode, backend, dG, Q, idx, qmask, args, Δ, inv_n)
-    sync!(backend)
+    finish!(backend)
     dQ, dG
 end
 

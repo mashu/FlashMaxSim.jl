@@ -31,6 +31,28 @@
     end
 end
 
+"""Sum `x` into `out[1]` (serial; `Tq` is small). Stays on-device."""
+@kernel function reduce_sum1_kernel!(out, @Const(x))
+    _ = @index(Global)
+    s = zero(eltype(out))
+    @inbounds for i in 1:length(x)
+        s += x[i]
+    end
+    @inbounds out[1] = s
+end
+
+"""`out[1] = max(count(mask), 1)` as `eltype(out)` — device query-length scale."""
+@kernel function count_true1_kernel!(out, @Const(mask))
+    _ = @index(Global)
+    c = zero(eltype(out))
+    @inbounds for i in 1:length(mask)
+        if mask[i]
+            c += one(eltype(out))
+        end
+    end
+    @inbounds out[1] = max(c, one(eltype(out)))
+end
+
 @kernel function paired_token_kernel!(argmax_out, partial,
                                       @Const(Q), @Const(D),
                                       @Const(qmask), @Const(dmask))

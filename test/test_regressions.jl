@@ -107,9 +107,9 @@ end
     neg = T(-1.0f4)
     s_h, arg_h = FlashMaxSim.pair_forward_host(q, d, qm, dm, neg)
     s_k, arg_k = FlashMaxSim.pair_forward_ka(q, d, qm, dm, neg)
-    @test s_k ≈ s_h rtol=1e-5 atol=1e-5
+    @test only(s_k) ≈ s_h rtol=1e-5 atol=1e-5
     @test arg_k == arg_h
-    @test s_k ≈ maxsim_dense(q, d, qm, dm) rtol=1e-5 atol=1e-5
+    @test only(s_k) ≈ maxsim_dense(q, d, qm, dm) rtol=1e-5 atol=1e-5
 
     δ = T(1.5)
     backend = KernelAbstractions.CPU()
@@ -130,7 +130,7 @@ end
         s_h, a_h = FlashMaxSim.pair_forward_host(q, d, qm, dm, neg)
         s_k, a_k = FlashMaxSim.pair_forward_ka(q, d, qm, dm, neg)
         @test a_h == a_k
-        @test s_h ≈ s_k rtol=1e-5
+        @test s_h ≈ only(s_k) rtol=1e-5
         @test s_h ≈ maxsim_dense(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
     end
     # All-negative dots: true max is negative, not dropped / clamped to `neg`.
@@ -140,7 +140,7 @@ end
     s_k, a_k = FlashMaxSim.pair_forward_ka(qn, dn, trues(3), trues(5), T(0))
     @test a_h == a_k
     @test all(>(0), a_h)
-    @test s_h ≈ s_k
+    @test s_h ≈ only(s_k)
     @test s_h ≈ maxsim_dense(qn, dn, trues(3), trues(5); neg = T(0))
     @test s_h ≈ T(-12)  # 3 query tokens × (−4)
     @test maxsim(qn, dn; neg = T(0)) ≈ s_h

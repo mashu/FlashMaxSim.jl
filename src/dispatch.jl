@@ -38,8 +38,7 @@ function maxsim(cfg::MaxSim{T}, q::AbstractMatrix{T}, d::AbstractMatrix{T},
                 qmask::AbstractVector{Bool},
                 dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
     score, _ = pair_forward(q, d, qmask, dmask, cfg.neg)
-    cfg.normalize || return score
-    score * (one(T) / T(query_count(qmask)))
+    pair_finalize(score, qmask, cfg.normalize)[1]
 end
 
 (cfg::MaxSim)(q::AbstractMatrix, d::AbstractMatrix) =

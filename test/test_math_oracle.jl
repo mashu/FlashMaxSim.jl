@@ -167,8 +167,8 @@ if run_cuda
         dq_cf, dd_cf = closed_form_pair(one(T), q, d, qm, arg_h)
         for mode in (AtomicUnified(), InvGrid())
             cfg = MaxSim{T}(T(-1.0f4), false, mode)
-            @test maxsim(cfg, qg, dg, qmg, dmg) ≈ s_ref rtol=1e-5 atol=1e-5
-            gq, gd = gradient((q, d) -> maxsim(cfg, q, d, qmg, dmg), qg, dg)
+            @test only(Array(maxsim(cfg, qg, dg, qmg, dmg))) ≈ s_ref rtol=1e-5 atol=1e-5
+            gq, gd = gradient((q, d) -> sum(maxsim(cfg, q, d, qmg, dmg)), qg, dg)
             @test cosine(Array(gq), dq_cf) ≥ 0.999
             @test cosine(Array(gd), dd_cf) ≥ 0.999
         end

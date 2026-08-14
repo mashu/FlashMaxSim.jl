@@ -7,12 +7,12 @@
 # ---- gather (∇Q) -------------------------------------------------------------
 
 @kernel function gather_pair_kernel!(dq, @Const(d), @Const(qmask),
-                                     @Const(argmax_u), δ, Td)
+                                     @Const(argmax_u), @Const(δ), Td)
     k, t = @index(Global, NTuple)
     @inbounds if qmask[t]
         u = Int(argmax_u[t])
         if 1 <= u <= Td
-            dq[k, t] = δ * d[k, u]
+            dq[k, t] = δ[1] * d[k, u]
         end
     end
 end
@@ -66,12 +66,12 @@ end
 # ---- atomic-unified scatter (∇D) --------------------------------------------
 
 @kernel function scatter_pair_atomic_kernel!(dd, @Const(q), @Const(qmask),
-                                             @Const(argmax_u), δ, Td)
+                                             @Const(argmax_u), @Const(δ), Td)
     k, t = @index(Global, NTuple)
     @inbounds if qmask[t]
         u = Int(argmax_u[t])
         if 1 <= u <= Td
-            @atomic dd[k, u] += δ * q[k, t]
+            @atomic dd[k, u] += δ[1] * q[k, t]
         end
     end
 end
@@ -263,15 +263,16 @@ end
 # ---- InvGrid CSR accumulate (∇D) --------------------------------------------
 
 @kernel function scatter_pair_csr_kernel!(dd, @Const(q), @Const(row_ptr),
-                                          @Const(col_idx), δ)
+                                          @Const(col_idx), @Const(δ))
     k, u = @index(Global, NTuple)
     acc = zero(eltype(dd))
     @inbounds begin
         a = Int(row_ptr[u]) + 1
         b = Int(row_ptr[u + 1])
+        δt = δ[1]
         for p in a:b
             t = Int(col_idx[p])
-            acc += δ * q[k, t]
+            acc += δt * q[k, t]
         end
         dd[k, u] = acc
     end
