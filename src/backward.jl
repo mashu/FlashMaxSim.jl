@@ -2,6 +2,10 @@
 #
 # CPU: sequential gather + [`accumulate_doc!`](@ref) (BitArray-safe).
 # GPU and other KA backends: gather/scatter kernels; no host copies of Q/D.
+#
+# Every layout exposes its KA implementation as a named `*_pullback_ka`
+# function so the device code paths can be exercised on the CPU backend in CI
+# (backend dispatch alone can never select them on a host array).
 
 function pair_pullback(δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
                        qmask::AbstractVector{Bool},
@@ -19,6 +23,7 @@ function pair_pullback(::CPU, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
     δ == zero(T) && return dq, dd
     dim, Tq = size(q)
     Td = size(d, 2)
+    length(qmask) == Tq || throw(DimensionMismatch("qmask vs query tokens"))
     length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
     δ_src = zeros(T, Tq)
     @inbounds for t in 1:Tq
@@ -34,7 +39,8 @@ function pair_pullback(::CPU, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
     dq, dd
 end
 
-function pair_pullback(backend, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
+function pair_pullback(backend::Backend, δ::T, q::AbstractMatrix{T},
+                       d::AbstractMatrix{T},
                        qmask::AbstractVector{Bool},
                        argmax_u::AbstractVector{<:Integer},
                        mode::BackwardStrategy) where {T<:AbstractFloat}
@@ -50,6 +56,7 @@ function pair_pullback_ka(backend, δ::T, q::AbstractMatrix{T}, d::AbstractMatri
     δ == zero(T) && return dq, dd
     dim, Tq = size(q)
     Td = size(d, 2)
+    length(qmask) == Tq || throw(DimensionMismatch("qmask vs query tokens"))
     length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
     launch!(gather_pair_kernel!, backend, (dim, Tq), dq, d, qmask, argmax_u, δ, Td)
     scatter_pair!(mode, backend, dd, q, qmask, argmax_u, δ)
@@ -84,8 +91,13 @@ function paired_pullback(::CPU, Δ::AbstractVector{T}, Q, D, qmask, args, inv_n,
     dQ, dD
 end
 
-function paired_pullback(backend, Δ::AbstractVector{T}, Q, D, qmask, args, inv_n,
-                         mode::BackwardStrategy) where {T}
+function paired_pullback(backend::Backend, Δ::AbstractVector{T}, Q, D, qmask,
+                         args, inv_n, mode::BackwardStrategy) where {T}
+    paired_pullback_ka(backend, Δ, Q, D, qmask, args, inv_n, mode)
+end
+
+function paired_pullback_ka(backend, Δ::AbstractVector{T}, Q, D, qmask, args,
+                            inv_n, mode::BackwardStrategy) where {T}
     dQ = zeros_like(Q)
     dD = zeros_like(D)
     dim, Tq, B = size(Q)
@@ -116,10 +128,11 @@ function inbatch_pullback(::CPU, Δ::AbstractMatrix{T}, Q, D, qmask, args, inv_n
     Bd, Bq = size(Δ)
     dim, Tq, _ = size(Q)
     Td = size(D, 2)
+    δ_src = zeros(T, Tq)
     @inbounds for j in 1:Bd, i in 1:Bq
         δ = T(Δ[j, i]) * inv_n[i]
         δ == zero(T) && continue
-        δ_src = zeros(T, Tq)
+        fill!(δ_src, zero(T))
         for t in 1:Tq
             qmask[t, i] || continue
             u = Int(args[t, j, i])
@@ -135,8 +148,13 @@ function inbatch_pullback(::CPU, Δ::AbstractMatrix{T}, Q, D, qmask, args, inv_n
     dQ, dD
 end
 
-function inbatch_pullback(backend, Δ::AbstractMatrix{T}, Q, D, qmask, args, inv_n,
-                          mode::BackwardStrategy) where {T}
+function inbatch_pullback(backend::Backend, Δ::AbstractMatrix{T}, Q, D, qmask,
+                          args, inv_n, mode::BackwardStrategy) where {T}
+    inbatch_pullback_ka(backend, Δ, Q, D, qmask, args, inv_n, mode)
+end
+
+function inbatch_pullback_ka(backend, Δ::AbstractMatrix{T}, Q, D, qmask, args,
+                             inv_n, mode::BackwardStrategy) where {T}
     dQ = zeros_like(Q)
     dD = zeros_like(D)
     dim, Tq, Bq = size(Q)
@@ -168,12 +186,13 @@ function candidates_pullback(::CPU, Δ::AbstractMatrix{T}, Q, gallery, idxs, qma
     dim, Tq, _ = size(Q)
     Td = size(gallery, 2)
     N = size(gallery, 3)
+    δ_src = zeros(T, Tq)
     @inbounds for b in 1:B, c in 1:C
         j = Int(idxs[c, b])
         (1 <= j <= N) || continue
         δ = T(Δ[c, b]) * inv_n[b]
         δ == zero(T) && continue
-        δ_src = zeros(T, Tq)
+        fill!(δ_src, zero(T))
         for t in 1:Tq
             qmask[t, b] || continue
             u = Int(args[t, c, b])
@@ -189,8 +208,14 @@ function candidates_pullback(::CPU, Δ::AbstractMatrix{T}, Q, gallery, idxs, qma
     dQ, dG
 end
 
-function candidates_pullback(backend, Δ::AbstractMatrix{T}, Q, gallery, idxs, qmask, args,
-                             inv_n, mode::BackwardStrategy) where {T}
+function candidates_pullback(backend::Backend, Δ::AbstractMatrix{T}, Q, gallery,
+                             idxs, qmask, args, inv_n,
+                             mode::BackwardStrategy) where {T}
+    candidates_pullback_ka(backend, Δ, Q, gallery, idxs, qmask, args, inv_n, mode)
+end
+
+function candidates_pullback_ka(backend, Δ::AbstractMatrix{T}, Q, gallery, idxs,
+                                qmask, args, inv_n, mode::BackwardStrategy) where {T}
     dQ = zeros_like(Q)
     dG = zeros_like(gallery)
     idx = indices_on(Q, idxs)

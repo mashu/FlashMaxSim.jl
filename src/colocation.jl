@@ -5,10 +5,23 @@ function true_mask(prototype::AbstractArray, dims::Integer...)
     fill!(similar(prototype, Bool, map(Int, dims)...), true)
 end
 
-"""KA backend used for colocation checks (BitArrays are host-only)."""
-array_backend(x::BitArray) = KernelAbstractions.CPU()
-array_backend(x::SubArray) = array_backend(parent(x))
-array_backend(x::AbstractArray) = get_backend(x)
+"""
+KA backend used for colocation checks.
+
+`BitArray` is host-only *and* is its own `parent`, so it must terminate the
+wrapper walk: KernelAbstractions' fallback is `get_backend(A) =
+get_backend(parent(A))`, which recurses forever on any array whose innermost
+parent is a `BitArray`. Walking `parent` here with an explicit fixpoint check
+covers `SubArray`, `Adjoint`, `PermutedDimsArray`, `ReshapedArray` and any
+other wrapper uniformly.
+"""
+array_backend(::BitArray) = KernelAbstractions.CPU()
+
+function array_backend(x::AbstractArray)
+    p = parent(x)
+    p === x && return get_backend(x)
+    array_backend(p)
+end
 
 """Require features and masks to share one KernelAbstractions backend."""
 function require_colocated(xs::AbstractArray...)

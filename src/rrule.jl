@@ -3,12 +3,22 @@
 # Cotangents stay on the primal score's backend. AbstractZero / Real /
 # AbstractArray, then one unthunk hop — never recurse on ZeroTangent.
 
-as_array_cotangent(::Type{T}, Δ::AbstractArray, prototype::AbstractArray) where {T} =
-    (out = similar(prototype, T); out .= Δ; out)
-as_array_cotangent(::Type{T}, Δ::Real, prototype::AbstractArray) where {T} =
+function as_array_cotangent(::Type{T}, Δ::AbstractArray,
+                            prototype::AbstractArray) where {T}
+    axes(Δ) == axes(prototype) || throw(DimensionMismatch(
+        "MaxSim cotangent axes $(axes(Δ)) do not match score axes $(axes(prototype))"))
+    copyto!(similar(prototype, T), Δ)   # copyto!, not .= — crosses host/device
+end
+
+function as_array_cotangent(::Type{T}, Δ::Real, prototype::AbstractArray) where {T}
+    length(prototype) == 1 || throw(ArgumentError(
+        "scalar MaxSim cotangent for a $(length(prototype))-element score array"))
     fill!(similar(prototype, T), T(Δ))
+end
+
 as_array_cotangent(::Type{T}, ::ChainRulesCore.AbstractZero, prototype::AbstractArray) where {T} =
     fill!(similar(prototype, T), zero(T))
+
 function as_array_cotangent(::Type{T}, Δ, prototype::AbstractArray) where {T}
     u = ChainRulesCore.unthunk(Δ)
     u === Δ && throw(ArgumentError("unsupported MaxSim cotangent type $(typeof(Δ))"))

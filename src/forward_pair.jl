@@ -1,8 +1,12 @@
 # forward_pair.jl — Fused single-pair MaxSim (paper Alg. 1).
 #
-# `Array` uses BLAS GEMM over document tiles (`DOC_TILE × Tq` scratch).
+# Host backend uses BLAS GEMM over document tiles (`DOC_TILE × Tq` scratch).
 # Other backends keep argmax and partials on-device via KernelAbstractions.
 # `neg` is unused in the pair scan — it is a candidate-index sentinel only.
+#
+# Dispatch is on the *backend*, not on the concrete array type: a `view`,
+# `Adjoint` or `PermutedDimsArray` over host memory must take the tiled BLAS
+# path, not the scalar KA loop.
 
 const DOC_TILE = 64
 
@@ -55,19 +59,24 @@ function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                          ::T) where {T<:AbstractFloat}
     require_colocated(q, d, qmask, dmask)
     _, Tq, _ = require_pair_shapes(q, d, qmask, dmask)
-    backend = get_backend(q)
+    backend = array_backend(q)
     argmax_u = zeros_like(q, Int32, Tq)
     partial = zeros_like(q, T, Tq)
     launch!(pair_token_kernel!, backend, Tq, argmax_u, partial, q, d, qmask, dmask)
     sum(partial), argmax_u
 end
 
-pair_forward(q::Array{T}, d::Array{T},
+pair_forward(q::AbstractMatrix{T}, d::AbstractMatrix{T},
+             qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
+             neg::T) where {T<:AbstractFloat} =
+    pair_forward(array_backend(q), q, d, qmask, dmask, neg)
+
+pair_forward(::CPU, q::AbstractMatrix{T}, d::AbstractMatrix{T},
              qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
              neg::T) where {T<:AbstractFloat} =
     pair_forward_host(q, d, qmask, dmask, neg)
 
-pair_forward(q::AbstractMatrix{T}, d::AbstractMatrix{T},
+pair_forward(::Backend, q::AbstractMatrix{T}, d::AbstractMatrix{T},
              qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
              neg::T) where {T<:AbstractFloat} =
     pair_forward_ka(q, d, qmask, dmask, neg)

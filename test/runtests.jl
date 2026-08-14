@@ -35,6 +35,7 @@ end
     include("test_paper_correctness.jl")
     include("test_math_oracle.jl")
     include("test_regressions.jl")
+    include("test_ka_cpu.jl")
     if run_cuda
         include("test_cuda.jl")
     end
