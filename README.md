@@ -16,10 +16,14 @@ Computes
 MaxSim(q, d) = Σ_t  max_u  ⟨q_t, d_u⟩
 ```
 
-**without materializing** the query-token × document-token similarity matrix
-(paper Algorithm 1). Training keeps only argmax indices and aggregates
-gradients with atomic-unified or inverse-grid scatter (paper §4.2 /
-Algorithm 2). Exact up to floating-point evaluation order (paper Prop. 1).
+Pair, paired-batch, and candidate scoring fuse the per-token argmax
+(paper Algorithm 1) without storing a dense query-token × document-token
+matrix. In-batch contrastive scoring (the ColBERT training layout) computes
+tiled GEMM chunks of `D'Q` then a light argmax accumulate. Training keeps
+only argmax indices and aggregates gradients with atomic-unified scatter, or
+inverse-grid CSR on CPU (paper §4.2 / Algorithm 3). The GPU `InvGrid` path
+is a destination-parallel scan over sources, not a constructed grid. Exact
+up to floating-point evaluation order (paper Prop. 1).
 
 Forward and backward run on the **same KernelAbstractions backend** as the
 features (CPU `Array` uses BLAS-tiled GEMM; CUDA / ROCm / Metal use fused
@@ -30,6 +34,9 @@ round-trips of `Q` / `D`.
 `BitArray` masks are allowed with `Array` features; GPU features need
 device masks (`true_mask` / `similar`). Candidate index matrices are copied
 onto the feature backend when needed.
+
+`neg` fills invalid candidate index slots only. It is not a clamp on token
+similarities; empty documents contribute `0`.
 
 ## Install
 
@@ -82,11 +89,13 @@ s = maxsim(qg, dg)
 
 | Paper | This package |
 |:------|:-------------|
-| Alg. 1 fused forward (no `S` in HBM) | `pair_forward` (BLAS tiles on `Array`; KA token kernel otherwise) |
+| Alg. 1 materialized `S` then max | `maxsim_dense` (oracle only) |
+| Alg. 2 fused forward (no `S` in HBM) | `pair_forward` / paired / candidates (BLAS tiles on `Array`; KA token kernel otherwise) |
+| In-batch `D'Q` tiles | `inbatch_forward` materializes GEMM chunks (`INBATCH_TILE_BYTES`), not Alg. 2 |
 | Prop. 1 exactness | tests vs `maxsim_dense` |
 | §4.2 Eq. 2–3 sparse grads | ChainRules `rrule` on the feature backend |
-| Atomic-unified `∇D` | `backward = AtomicUnified()` (`@atomic` on GPU) |
-| Inverse-grid `∇D` | `backward = InvGrid()` (CSR on CPU; dest-parallel scan on GPU) |
+| Atomic-unified `∇D` | `backward = AtomicUnified()` (`@atomic` on GPU; paper's low-contention fallback) |
+| Inverse-grid `∇D` (Alg. 3) | `backward = InvGrid()` — CSR on CPU; dest-parallel scan on GPU (same sum, not Alg. 3) |
 | In-batch / candidate scoring | `InBatch`, index-matrix layouts |
 
 Not ported: INT8 tensor-core path, split-`d`, Chamfer, CUDA shared-memory

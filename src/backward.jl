@@ -16,7 +16,7 @@ function pair_pullback(::CPU, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
                        mode::BackwardStrategy) where {T<:AbstractFloat}
     dq = zeros_like(q)
     dd = zeros_like(d)
-    (!isfinite(δ) || δ == zero(T)) && return dq, dd
+    δ == zero(T) && return dq, dd
     dim, Tq = size(q)
     Td = size(d, 2)
     length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
@@ -47,7 +47,7 @@ function pair_pullback_ka(backend, δ::T, q::AbstractMatrix{T}, d::AbstractMatri
                           mode::BackwardStrategy) where {T<:AbstractFloat}
     dq = zeros_like(q)
     dd = zeros_like(d)
-    (!isfinite(δ) || δ == zero(T)) && return dq, dd
+    δ == zero(T) && return dq, dd
     dim, Tq = size(q)
     Td = size(d, 2)
     length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
@@ -118,7 +118,7 @@ function inbatch_pullback(::CPU, Δ::AbstractMatrix{T}, Q, D, qmask, args, inv_n
     Td = size(D, 2)
     @inbounds for j in 1:Bd, i in 1:Bq
         δ = T(Δ[j, i]) * inv_n[i]
-        (!isfinite(δ) || δ == zero(T)) && continue
+        δ == zero(T) && continue
         δ_src = zeros(T, Tq)
         for t in 1:Tq
             qmask[t, i] || continue
@@ -172,7 +172,7 @@ function candidates_pullback(::CPU, Δ::AbstractMatrix{T}, Q, gallery, idxs, qma
         j = Int(idxs[c, b])
         (1 <= j <= N) || continue
         δ = T(Δ[c, b]) * inv_n[b]
-        (!isfinite(δ) || δ == zero(T)) && continue
+        δ == zero(T) && continue
         δ_src = zeros(T, Tq)
         for t in 1:Tq
             qmask[t, b] || continue

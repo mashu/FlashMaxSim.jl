@@ -28,7 +28,7 @@ function accumulate_doc!(::AtomicUnified, dd::AbstractMatrix{T},
     dd
 end
 
-"""Scatter ``∇D`` via inverse-grid CSR (paper Alg. 2)."""
+"""Scatter ``∇D`` via inverse-grid CSR (paper Algorithm 3)."""
 function accumulate_doc!(::InvGrid, dd::AbstractMatrix{T},
                          q::AbstractMatrix{T},
                          δ_per_src::AbstractVector{T},

@@ -12,13 +12,17 @@ end
 """Return length-normalized scores (does not mutate `scores`)."""
 function length_normalize(scores::AbstractVector{T},
                           qmask::AbstractMatrix{Bool}) where {T}
-    scores .* inv_token_counts(qmask, T, true)
+    length_normalize(scores, inv_token_counts(qmask, T, true))
 end
 
 function length_normalize(scores::AbstractMatrix{T},
                           qmask::AbstractMatrix{Bool}) where {T}
-    scores .* reshape(inv_token_counts(qmask, T, true), 1, :)
+    length_normalize(scores, inv_token_counts(qmask, T, true))
 end
+
+length_normalize(scores::AbstractVector, inv_n::AbstractVector) = scores .* inv_n
+length_normalize(scores::AbstractMatrix, inv_n::AbstractVector) =
+    scores .* reshape(inv_n, 1, :)
 
 """Length-normalize candidate scores; invalid `idxs` keep `neg` (not `neg / n_q`)."""
 function length_normalize_candidates(scores::AbstractMatrix{T},
@@ -26,7 +30,16 @@ function length_normalize_candidates(scores::AbstractMatrix{T},
                                      idxs::AbstractMatrix{<:Integer},
                                      n_gallery::Integer,
                                      neg::T) where {T}
-    out = length_normalize(scores, qmask)
+    length_normalize_candidates(scores, inv_token_counts(qmask, T, true),
+                                idxs, n_gallery, neg)
+end
+
+function length_normalize_candidates(scores::AbstractMatrix{T},
+                                     inv_n::AbstractVector{T},
+                                     idxs::AbstractMatrix{<:Integer},
+                                     n_gallery::Integer,
+                                     neg::T) where {T}
+    out = length_normalize(scores, inv_n)
     idx = indices_on(scores, idxs)
     valid = (idx .>= 1) .& (idx .<= n_gallery)
     ifelse.(valid, out, neg)

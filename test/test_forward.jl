@@ -73,3 +73,19 @@ end
     @test maxsim(q, d, trues(3), trues(5)) isa Float32
     @test_throws DimensionMismatch maxsim(q, d, trues(2), trues(5))
 end
+
+@testset "layout shape checks" begin
+    T = Float32
+    Q = randn(T, 4, 3, 2)
+    D = randn(T, 4, 5, 2)
+    @test_throws DimensionMismatch maxsim(Q, D, trues(3, 2), trues(5, 3))
+    @test_throws DimensionMismatch maxsim(Q, D, trues(2, 2), trues(5, 2))
+    @test_throws DimensionMismatch maxsim(Q, randn(T, 5, 5, 2))
+    @test_throws DimensionMismatch maxsim(Q, randn(T, 4, 5, 3))
+    @test_throws DimensionMismatch maxsim(Q, D, trues(3, 2), trues(4, 2), InBatch())
+    gallery = randn(T, 4, 5, 4)
+    idxs = Int32[1 2; 3 4; 0 1]
+    @test_throws DimensionMismatch maxsim(Q, gallery, idxs, trues(3, 3), trues(5, 4))
+    @test_throws DimensionMismatch maxsim(Q, gallery, Int32[1 2 3; 0 1 2], trues(3, 2), trues(5, 4))
+    @test_throws DimensionMismatch maxsim(Q, randn(T, 5, 5, 4), idxs)
+end

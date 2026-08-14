@@ -1,14 +1,17 @@
 # kernels_forward.jl — Fused MaxSim token kernels (paper Alg. 1), on-device.
+#
+# First valid document token always wins (`arg == 0 || s > mx`); `neg` is not
+# a similarity clamp. Empty / fully-masked docs contribute 0.
 
 @kernel function pair_token_kernel!(argmax_out, partial,
                                     @Const(q), @Const(d),
-                                    @Const(qmask), @Const(dmask), neg)
+                                    @Const(qmask), @Const(dmask))
     t = @index(Global)
     dim = size(q, 1)
     Td = size(d, 2)
     Tq = size(q, 2)
     if t <= Tq
-        mx = neg
+        mx = zero(eltype(q))
         arg = Int32(0)
         if @inbounds qmask[t]
             @inbounds for u in 1:Td
@@ -23,7 +26,6 @@
                 end
             end
         end
-        # No valid doc token → contribute 0 (not `neg`) so length-norm ≠ −1e4.
         @inbounds partial[t] = arg == Int32(0) ? zero(eltype(q)) : mx
         @inbounds argmax_out[t] = arg
     end
@@ -31,11 +33,11 @@ end
 
 @kernel function paired_token_kernel!(argmax_out, partial,
                                       @Const(Q), @Const(D),
-                                      @Const(qmask), @Const(dmask), neg)
+                                      @Const(qmask), @Const(dmask))
     t, b = @index(Global, NTuple)
     dim = size(Q, 1)
     Td = size(D, 2)
-    mx = neg
+    mx = zero(eltype(Q))
     arg = Int32(0)
     if @inbounds qmask[t, b]
         @inbounds for u in 1:Td
@@ -80,13 +82,13 @@ end
 
 @kernel function candidates_token_kernel!(argmax_out, partial,
                                           @Const(Q), @Const(gallery), @Const(idxs),
-                                          @Const(qmask), @Const(dmask), neg, N)
+                                          @Const(qmask), @Const(dmask), N)
     t, c, b = @index(Global, NTuple)
     j = Int(idxs[c, b])
     if 1 <= j <= N
         dim = size(Q, 1)
         Td = size(gallery, 2)
-        mx = neg
+        mx = zero(eltype(Q))
         arg = Int32(0)
         if @inbounds qmask[t, b]
             @inbounds for u in 1:Td

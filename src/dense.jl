@@ -5,6 +5,10 @@
 
 Reference MaxSim that builds the full `(Td, Tq)` similarity matrix.
 Used to assert Flash-MaxSim exactness (paper Prop. 1).
+
+Takes the true max over valid document tokens. `neg` is only the fill
+value for invalid candidate indices (see the index-matrix method); it is
+not a similarity clamp.
 """
 function maxsim_dense(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                       qmask::AbstractVector{Bool} = true_mask(q, size(q, 2)),
@@ -19,12 +23,15 @@ function maxsim_dense(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     nq = 0
     @inbounds for t in 1:Tq
         qmh[t] || continue
-        mx = neg
+        mx = zero(T)
         hit = false
         for u in 1:Td
             dmh[u] || continue
-            hit = true
-            mx = max(mx, S[u, t])
+            s = S[u, t]
+            if !hit || s > mx
+                mx = s
+                hit = true
+            end
         end
         hit || continue
         score += mx

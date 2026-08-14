@@ -4,7 +4,7 @@
 # AbstractArray, then one unthunk hop — never recurse on ZeroTangent.
 
 as_array_cotangent(::Type{T}, Δ::AbstractArray, prototype::AbstractArray) where {T} =
-    copyto!(similar(prototype, T), Δ)
+    (out = similar(prototype, T); out .= Δ; out)
 as_array_cotangent(::Type{T}, Δ::Real, prototype::AbstractArray) where {T} =
     fill!(similar(prototype, T), T(Δ))
 as_array_cotangent(::Type{T}, ::ChainRulesCore.AbstractZero, prototype::AbstractArray) where {T} =
@@ -46,7 +46,7 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     require_colocated(Q, D, qmask, dmask)
     scores, args = paired_forward(Q, D, qmask, dmask, cfg.neg)
     inv_n = inv_token_counts(qmask, T, cfg.normalize)
-    scores_n = cfg.normalize ? length_normalize(scores, qmask) : scores
+    scores_n = cfg.normalize ? length_normalize(scores, inv_n) : scores
     function pullback(Δ)
         Δh = as_array_cotangent(T, Δ, scores_n)
         dQ, dD = paired_pullback(Δh, Q, D, qmask, args, inv_n, cfg.backward)
@@ -63,7 +63,7 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     require_colocated(Q, D, qmask, dmask)
     S, args = inbatch_forward(Q, D, qmask, dmask, cfg.neg)
     inv_n = inv_token_counts(qmask, T, cfg.normalize)
-    Sn = cfg.normalize ? length_normalize(S, qmask) : S
+    Sn = cfg.normalize ? length_normalize(S, inv_n) : S
     function pullback(Δ)
         Δh = as_array_cotangent(T, Δ, Sn)
         dQ, dD = inbatch_pullback(Δh, Q, D, qmask, args, inv_n, cfg.backward)
@@ -81,7 +81,7 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     S, args = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
     inv_n = inv_token_counts(qmask, T, cfg.normalize)
     Sn = cfg.normalize ?
-         length_normalize_candidates(S, qmask, idxs, size(gallery, 3), cfg.neg) : S
+         length_normalize_candidates(S, inv_n, idxs, size(gallery, 3), cfg.neg) : S
     function pullback(Δ)
         Δh = as_array_cotangent(T, Δ, Sn)
         dQ, dG = candidates_pullback(Δh, Q, gallery, idxs, qmask, args, inv_n, cfg.backward)

@@ -7,11 +7,40 @@
 """Target bytes for one in-batch GEMM tile (`Td × C × Tq × Bq`)."""
 const INBATCH_TILE_BYTES = 64 * 1024 * 1024
 
-function inbatch_doc_chunk(Td::Int, Tq::Int, Bq::Int, Bd::Int)
+function inbatch_doc_chunk(::Type{T}, Td::Int, Tq::Int, Bq::Int, Bd::Int) where {T}
     Bd <= 0 && return 1
-    denom = 4 * max(Td, 1) * max(Tq, 1) * max(Bq, 1)
+    denom = sizeof(T) * max(Td, 1) * max(Tq, 1) * max(Bq, 1)
     c = max(1, INBATCH_TILE_BYTES ÷ denom)
     min(Bd, c)
+end
+
+function require_paired_shapes(Q, D, qmask, dmask)
+    dim, Tq, B = size(Q)
+    Td = size(D, 2)
+    size(D, 1) == dim || throw(DimensionMismatch("feature dim"))
+    size(D, 3) == B || throw(DimensionMismatch("batch"))
+    size(qmask) == (Tq, B) || throw(DimensionMismatch("qmask"))
+    size(dmask) == (Td, B) || throw(DimensionMismatch("dmask"))
+    dim, Tq, Td, B
+end
+
+function require_inbatch_shapes(Q, D, qmask, dmask)
+    dim, Tq, Bq = size(Q)
+    Td, Bd = size(D, 2), size(D, 3)
+    size(D, 1) == dim || throw(DimensionMismatch("feature dim"))
+    size(qmask) == (Tq, Bq) || throw(DimensionMismatch("qmask"))
+    size(dmask) == (Td, Bd) || throw(DimensionMismatch("dmask"))
+    dim, Tq, Bq, Td, Bd
+end
+
+function require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
+    dim, Tq, B = size(Q)
+    Td, N = size(gallery, 2), size(gallery, 3)
+    size(gallery, 1) == dim || throw(DimensionMismatch("feature dim"))
+    size(idxs, 2) == B || throw(DimensionMismatch("idxs"))
+    size(qmask) == (Tq, B) || throw(DimensionMismatch("qmask"))
+    size(dmask) == (Td, N) || throw(DimensionMismatch("dmask"))
+    dim, Tq, B, Td, N
 end
 
 function inbatch_accumulate_host!(S::AbstractMatrix{T},
@@ -46,8 +75,7 @@ function paired_forward(Q::Array{T,3}, D::Array{T,3},
                         dmask::AbstractMatrix{Bool},
                         neg::T) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
-    B = size(Q, 3)
-    Tq = size(Q, 2)
+    _, Tq, _, B = require_paired_shapes(Q, D, qmask, dmask)
     scores = zeros(T, B)
     args = zeros(Int32, Tq, B)
     @inbounds for b in 1:B
@@ -62,35 +90,30 @@ end
 function paired_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                         qmask::AbstractMatrix{Bool},
                         dmask::AbstractMatrix{Bool},
-                        neg::T) where {T<:AbstractFloat}
+                        ::T) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
-    B = size(Q, 3)
-    Tq = size(Q, 2)
+    _, Tq, _, B = require_paired_shapes(Q, D, qmask, dmask)
     backend = get_backend(Q)
     args = zeros_like(Q, Int32, Tq, B)
     partial = zeros_like(Q, T, Tq, B)
     launch!(paired_token_kernel!, backend, (Tq, B),
-            args, partial, Q, D, qmask, dmask, neg)
+            args, partial, Q, D, qmask, dmask)
     vec(sum(partial; dims = 1)), args
 end
 
 function inbatch_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                          qmask::AbstractMatrix{Bool},
                          dmask::AbstractMatrix{Bool},
-                         neg::T) where {T<:AbstractFloat}
+                         ::T) where {T<:AbstractFloat}
     require_colocated(Q, D, qmask, dmask)
-    dim, Tq, Bq = size(Q)
-    Td, Bd = size(D, 2), size(D, 3)
-    size(D, 1) == dim || throw(DimensionMismatch("feature dim"))
-    size(qmask) == (Tq, Bq) || throw(DimensionMismatch("qmask"))
-    size(dmask) == (Td, Bd) || throw(DimensionMismatch("dmask"))
+    dim, Tq, Bq, Td, Bd = require_inbatch_shapes(Q, D, qmask, dmask)
 
     S = zeros_like(Q, T, Bd, Bq)
     args = zeros_like(Q, Int32, Tq, Bd, Bq)
     (Bd == 0 || Bq == 0 || Tq == 0 || Td == 0) && return S, args
 
     Qmat = reshape(Q, dim, Tq * Bq)
-    chunk = inbatch_doc_chunk(Td, Tq, Bq, Bd)
+    chunk = inbatch_doc_chunk(T, Td, Tq, Bq, Bd)
     backend = get_backend(Q)
     use_host = Q isa Array && D isa Array
 
@@ -119,8 +142,8 @@ function candidates_forward(Q::Array{T,3},
                             dmask::AbstractMatrix{Bool},
                             neg::T) where {T<:AbstractFloat}
     require_colocated(Q, gallery, qmask, dmask)
-    C, B = size(idxs, 1), size(idxs, 2)
-    Tq, N = size(Q, 2), size(gallery, 3)
+    _, Tq, B, _, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
+    C = size(idxs, 1)
     S = fill(neg, C, B)
     args = zeros(Int32, Tq, C, B)
     @inbounds for b in 1:B, c in 1:C
@@ -141,14 +164,14 @@ function candidates_forward(Q::AbstractArray{T,3},
                             dmask::AbstractMatrix{Bool},
                             neg::T) where {T<:AbstractFloat}
     require_colocated(Q, gallery, qmask, dmask)
+    _, Tq, B, _, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
     idx = indices_on(Q, idxs)
-    C, B = size(idx, 1), size(idx, 2)
-    Tq, N = size(Q, 2), size(gallery, 3)
+    C = size(idx, 1)
     backend = get_backend(Q)
     args = zeros_like(Q, Int32, Tq, C, B)
     partial = zeros_like(Q, T, Tq, C, B)
     launch!(candidates_token_kernel!, backend, (Tq, C, B),
-            args, partial, Q, gallery, idx, qmask, dmask, neg, N)
+            args, partial, Q, gallery, idx, qmask, dmask, N)
     S = dropdims(sum(partial; dims = 1); dims = 1)
     valid = (idx .>= 1) .& (idx .<= N)
     ifelse.(valid, S, neg), args

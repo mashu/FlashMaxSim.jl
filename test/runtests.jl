@@ -33,6 +33,7 @@ end
     include("test_forward.jl")
     include("test_grad.jl")
     include("test_paper_correctness.jl")
+    include("test_math_oracle.jl")
     include("test_regressions.jl")
     if run_cuda
         include("test_cuda.jl")

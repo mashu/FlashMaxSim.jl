@@ -58,3 +58,32 @@ end
     gq = gradient(q -> maxsim(q, d), q)[1]
     @test gq !== nothing && all(isfinite, gq)
 end
+
+@testset "layout gradients vs dense" begin
+    Random.seed!(14)
+    T = Float32
+    Q = randn(T, 8, 4, 3)
+    D = randn(T, 8, 5, 3)
+    qm, dm = trues(4, 3), trues(5, 3)
+    gQ, gD = gradient((Q, D) -> sum(maxsim(Q, D, qm, dm)), Q, D)
+    gQr, gDr = gradient((Q, D) -> sum(maxsim_dense(Q[:, :, b], D[:, :, b], qm[:, b], dm[:, b])
+                                        for b in 1:size(Q, 3)), Q, D)
+    @test cosine(gQ, gQr) ≥ 0.999
+    @test cosine(gD, gDr) ≥ 0.999
+
+    gQi, gDi = gradient((Q, D) -> sum(maxsim(Q, D, qm, dm, InBatch())), Q, D)
+    gQir, gDir = gradient((Q, D) -> sum(maxsim_dense(Q[:, :, i], D[:, :, j], qm[:, i], dm[:, j])
+                                          for j in 1:size(D, 3), i in 1:size(Q, 3)), Q, D)
+    @test cosine(gQi, gQir) ≥ 0.999
+    @test cosine(gDi, gDir) ≥ 0.999
+
+    G = randn(T, 8, 5, 7)
+    idxs = Int32[1 2 3; 4 5 6]
+    dmG = trues(5, 7)
+    gQc, gG = gradient((Q, G) -> sum(maxsim(Q, G, idxs, qm, dmG)), Q, G)
+    gQcr, gGr = gradient((Q, G) -> sum(maxsim_dense(Q[:, :, b], G[:, :, Int(idxs[c, b])],
+                                                   qm[:, b], dmG[:, Int(idxs[c, b])])
+                                      for c in 1:size(idxs, 1), b in 1:size(Q, 3)), Q, G)
+    @test cosine(gQc, gQcr) ≥ 0.999
+    @test cosine(gG, gGr) ≥ 0.999
+end

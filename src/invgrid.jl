@@ -1,4 +1,4 @@
-# invgrid.jl — Inverse-grid CSR for atomic-free ∇D (paper §4.2.2 / Alg. 2).
+# invgrid.jl — Inverse-grid CSR for atomic-free ∇D (paper §4.2.2 / Alg. 3).
 
 """
 Build CSR `(row_ptr, col_idx)` inverting `argmax[source] → dest`.
@@ -6,33 +6,30 @@ Build CSR `(row_ptr, col_idx)` inverting `argmax[source] → dest`.
 `argmax` length `n_src`; values in `1:n_dest` (0 = inactive source, dropped).
 `row_ptr` is length `n_dest + 1` with **0-based exclusive ends** (CSR prefix
 sums): destination `u` owns `col_idx[(row_ptr[u] + 1):row_ptr[u + 1]]`.
+
+Counting sort: one pass to count, prefix-sum `row_ptr`, one pass to scatter
+sources. Sources that share a destination stay in source order.
 """
 function build_inverse_csr(argmax::AbstractVector{<:Integer}, n_dest::Integer)
     n_src = length(argmax)
-    srcs = Int[]
-    dests = Int[]
-    sizehint!(srcs, n_src)
-    sizehint!(dests, n_src)
+    nd = Int(n_dest)
+    row_ptr = zeros(Int32, nd + 1)
     @inbounds for s in 1:n_src
         u = Int(argmax[s])
-        (1 <= u <= n_dest) || continue
-        push!(srcs, s)
-        push!(dests, u)
+        (1 <= u <= nd) || continue
+        row_ptr[u + 1] += Int32(1)
     end
-    nnz = length(srcs)
-    order = sortperm(dests; alg = Base.Sort.DEFAULT_STABLE)
-    col_idx = Vector{Int32}(undef, nnz)
-    sorted_dest = Vector{Int}(undef, nnz)
-    @inbounds for k in 1:nnz
-        col_idx[k] = Int32(srcs[order[k]])
-        sorted_dest[k] = dests[order[k]]
-    end
-    row_ptr = zeros(Int32, Int(n_dest) + 1)
-    @inbounds for k in 1:nnz
-        row_ptr[sorted_dest[k] + 1] += Int32(1)
-    end
-    @inbounds for u in 1:n_dest
+    @inbounds for u in 1:nd
         row_ptr[u + 1] += row_ptr[u]
+    end
+    nnz = Int(row_ptr[nd + 1])
+    col_idx = Vector{Int32}(undef, nnz)
+    cursor = copy(row_ptr)
+    @inbounds for s in 1:n_src
+        u = Int(argmax[s])
+        (1 <= u <= nd) || continue
+        cursor[u] += Int32(1)
+        col_idx[Int(cursor[u])] = Int32(s)
     end
     row_ptr, col_idx
 end

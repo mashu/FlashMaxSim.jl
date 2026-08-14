@@ -120,3 +120,51 @@ end
         @test dd_k ≈ dd_s rtol=1e-5 atol=1e-5
     end
 end
+
+@testset "adversarial neg: host == KA == dense" begin
+    Random.seed!(99)
+    T = Float32
+    q, d = randn(T, 8, 6), randn(T, 8, 7)
+    qm, dm = trues(6), trues(7)
+    for neg in (T(0), T(10), T(-1.0f4))
+        s_h, a_h = FlashMaxSim.pair_forward_host(q, d, qm, dm, neg)
+        s_k, a_k = FlashMaxSim.pair_forward_ka(q, d, qm, dm, neg)
+        @test a_h == a_k
+        @test s_h ≈ s_k rtol=1e-5
+        @test s_h ≈ maxsim_dense(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
+    end
+    # All-negative dots: true max is negative, not dropped / clamped to `neg`.
+    qn = ones(T, 4, 3)
+    dn = -ones(T, 4, 5)
+    s_h, a_h = FlashMaxSim.pair_forward_host(qn, dn, trues(3), trues(5), T(0))
+    s_k, a_k = FlashMaxSim.pair_forward_ka(qn, dn, trues(3), trues(5), T(0))
+    @test a_h == a_k
+    @test all(>(0), a_h)
+    @test s_h ≈ s_k
+    @test s_h ≈ maxsim_dense(qn, dn, trues(3), trues(5); neg = T(0))
+    @test s_h ≈ T(-12)  # 3 query tokens × (−4)
+    @test maxsim(qn, dn; neg = T(0)) ≈ s_h
+end
+
+@testset "in-batch tile uses sizeof(T)" begin
+    c32 = FlashMaxSim.inbatch_doc_chunk(Float32, 128, 32, 32, 10_000)
+    c64 = FlashMaxSim.inbatch_doc_chunk(Float64, 128, 32, 32, 10_000)
+    @test c32 == 128
+    @test c64 == 64
+end
+
+@testset "NaN cotangent propagates on CPU" begin
+    T = Float32
+    q, d = randn(T, 4, 3), randn(T, 4, 5)
+    cfg = MaxSim{T}()
+    _, back = rrule(maxsim, cfg, q, d, trues(3), trues(5))
+    dq, dd = back(T(NaN))[3:4]
+    @test any(isnan, dq) && any(isnan, dd)
+
+    Q, D = randn(T, 4, 3, 2), randn(T, 4, 5, 2)
+    Δ = zeros(T, 2)
+    Δ[1] = T(NaN)
+    _, backb = rrule(maxsim, cfg, Q, D, trues(3, 2), trues(5, 2))
+    dQ, dD = backb(Δ)[3:4]
+    @test any(isnan, dQ) && any(isnan, dD)
+end

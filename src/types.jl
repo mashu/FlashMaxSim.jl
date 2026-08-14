@@ -10,7 +10,7 @@ abstract type BackwardStrategy end
 """Source-parallel ``∇D`` scatter (atomics on GPU; sequential on CPU)."""
 struct AtomicUnified <: BackwardStrategy end
 
-"""Destination-owned ``∇D`` (CSR on CPU; dest-parallel scan on GPU)."""
+"""Destination-owned ``∇D``. CPU builds a CSR (paper Algorithm 3); GPU scans every source per destination (same sum, not a constructed grid)."""
 struct InvGrid <: BackwardStrategy end
 
 """
@@ -18,6 +18,10 @@ struct InvGrid <: BackwardStrategy end
     MaxSim(::Type{T}; ...)
 
 Callable MaxSim scorer. `T` is the feature / score eltype.
+
+`neg` fills **invalid candidate indices** only. It is not a clamp on token
+similarities — MaxSim always uses the true max over valid document tokens.
+Empty / fully-masked documents contribute `0`, not `neg`.
 """
 struct MaxSim{T<:AbstractFloat, B<:BackwardStrategy}
     neg::T

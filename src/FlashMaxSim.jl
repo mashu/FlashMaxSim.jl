@@ -1,8 +1,10 @@
 # FlashMaxSim.jl — Julia port of Flash-MaxSim (Pony et al., 2026).
 #
-# Exact ColBERT MaxSim without materializing the query×doc similarity tensor
-# (paper Alg. 1). Training backward saves only argmax indices and aggregates
-# with atomic-unified or inverse-grid scatter (paper Alg. 2 / §4.2).
+# Pair / paired / candidate MaxSim fuse the per-token argmax without storing
+# a dense query×doc similarity matrix (paper Alg. 1). In-batch contrastive
+# scoring tiles GEMM chunks of `D'Q`. Training backward saves only argmax
+# indices and aggregates with atomic-unified scatter, or inverse-grid CSR on
+# CPU (paper Alg. 3 / §4.2). GPU `InvGrid` is a dest-parallel scan.
 #
 # Backend-agnostic via KernelAbstractions. Features, masks, scores, argmax,
 # and cotangents stay on the same backend — no host round-trips of Q/D.
