@@ -37,7 +37,6 @@ end
 function maxsim(cfg::MaxSim{T}, q::AbstractMatrix{T}, d::AbstractMatrix{T},
                 qmask::AbstractVector{Bool},
                 dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
-    require_colocated(q, d, qmask, dmask)
     score, _ = pair_forward(q, d, qmask, dmask, cfg.neg)
     cfg.normalize || return score
     score * (one(T) / T(query_count(qmask)))
@@ -74,7 +73,6 @@ end
 function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                 qmask::AbstractMatrix{Bool},
                 dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
     scores, _ = paired_forward(Q, D, qmask, dmask, cfg.neg)
     cfg.normalize ? length_normalize(scores, qmask) : scores
 end
@@ -116,7 +114,6 @@ end
 function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                 qmask::AbstractMatrix{Bool}, dmask::AbstractMatrix{Bool},
                 ::InBatch) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
     S, _ = inbatch_forward(Q, D, qmask, dmask, cfg.neg)
     cfg.normalize ? length_normalize(S, qmask) : S
 end
@@ -157,7 +154,6 @@ function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, gallery::AbstractArray{T,
                 idxs::AbstractMatrix{<:Integer},
                 qmask::AbstractMatrix{Bool},
                 dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
-    require_colocated(Q, gallery, qmask, dmask)
     S, _ = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
     cfg.normalize ?
         length_normalize_candidates(S, qmask, idxs, size(gallery, 3), cfg.neg) : S

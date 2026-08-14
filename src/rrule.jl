@@ -2,6 +2,7 @@
 #
 # Cotangents stay on the primal score's backend. AbstractZero / Real /
 # AbstractArray, then one unthunk hop — never recurse on ZeroTangent.
+# Colocation is enforced once in the forward entry points.
 
 function as_array_cotangent(::Type{T}, Δ::AbstractArray,
                             prototype::AbstractArray) where {T}
@@ -37,7 +38,6 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               q::AbstractMatrix{T}, d::AbstractMatrix{T},
                               qmask::AbstractVector{Bool},
                               dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
-    require_colocated(q, d, qmask, dmask)
     score, argmax_u = pair_forward(q, d, qmask, dmask, cfg.neg)
     inv_n = cfg.normalize ? (one(T) / T(query_count(qmask))) : one(T)
     score_out = score * inv_n
@@ -53,7 +53,6 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                               qmask::AbstractMatrix{Bool},
                               dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
     scores, args = paired_forward(Q, D, qmask, dmask, cfg.neg)
     inv_n = inv_token_counts(qmask, T, cfg.normalize)
     scores_n = cfg.normalize ? length_normalize(scores, inv_n) : scores
@@ -70,7 +69,6 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               qmask::AbstractMatrix{Bool},
                               dmask::AbstractMatrix{Bool},
                               ::InBatch) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
     S, args = inbatch_forward(Q, D, qmask, dmask, cfg.neg)
     inv_n = inv_token_counts(qmask, T, cfg.normalize)
     Sn = cfg.normalize ? length_normalize(S, inv_n) : S
@@ -87,7 +85,6 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               idxs::AbstractMatrix{<:Integer},
                               qmask::AbstractMatrix{Bool},
                               dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
-    require_colocated(Q, gallery, qmask, dmask)
     S, args = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
     inv_n = inv_token_counts(qmask, T, cfg.normalize)
     Sn = cfg.normalize ?

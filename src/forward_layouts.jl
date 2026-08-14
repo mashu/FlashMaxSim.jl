@@ -79,6 +79,7 @@ function paired_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                         qmask::AbstractMatrix{Bool},
                         dmask::AbstractMatrix{Bool},
                         neg::T) where {T<:AbstractFloat}
+    require_colocated(Q, D, qmask, dmask)
     paired_forward(array_backend(Q), Q, D, qmask, dmask, neg)
 end
 
@@ -86,13 +87,14 @@ function paired_forward(::CPU, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                         qmask::AbstractMatrix{Bool},
                         dmask::AbstractMatrix{Bool},
                         neg::T) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
-    _, Tq, _, B = require_paired_shapes(Q, D, qmask, dmask)
+    _, Tq, Td, B = require_paired_shapes(Q, D, qmask, dmask)
     scores = zeros(T, B)
     args = zeros(Int32, Tq, B)
+    Stile, mx, argmax_u = pair_host_scratch(T, Tq, Td)
     @inbounds for b in 1:B
-        s, au = pair_forward_host(view(Q, :, :, b), view(D, :, :, b),
-                                  view(qmask, :, b), view(dmask, :, b), neg)
+        s, au = pair_forward_host!(argmax_u, mx, Stile,
+                                   view(Q, :, :, b), view(D, :, :, b),
+                                   view(qmask, :, b), view(dmask, :, b), neg)
         scores[b] = s
         args[:, b] .= au
     end
@@ -110,7 +112,6 @@ function paired_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3}
                            qmask::AbstractMatrix{Bool},
                            dmask::AbstractMatrix{Bool},
                            ::T) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
     _, Tq, _, B = require_paired_shapes(Q, D, qmask, dmask)
     args = zeros_like(Q, Int32, Tq, B)
     partial = zeros_like(Q, T, Tq, B)
@@ -126,6 +127,7 @@ function inbatch_forward(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                          qmask::AbstractMatrix{Bool},
                          dmask::AbstractMatrix{Bool},
                          neg::T) where {T<:AbstractFloat}
+    require_colocated(Q, D, qmask, dmask)
     inbatch_forward(array_backend(Q), Q, D, qmask, dmask, neg)
 end
 
@@ -133,7 +135,6 @@ function inbatch_forward(::CPU, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                          qmask::AbstractMatrix{Bool},
                          dmask::AbstractMatrix{Bool},
                          ::T) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
     dim, Tq, Bq, Td, Bd = require_inbatch_shapes(Q, D, qmask, dmask)
     S = zeros(T, Bd, Bq)
     args = zeros(Int32, Tq, Bd, Bq)
@@ -164,7 +165,6 @@ function inbatch_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3
                             qmask::AbstractMatrix{Bool},
                             dmask::AbstractMatrix{Bool},
                             ::T) where {T<:AbstractFloat}
-    require_colocated(Q, D, qmask, dmask)
     dim, Tq, Bq, Td, Bd = require_inbatch_shapes(Q, D, qmask, dmask)
     S = zeros_like(Q, T, Bd, Bq)
     args = zeros_like(Q, Int32, Tq, Bd, Bq)
@@ -194,6 +194,7 @@ function candidates_forward(Q::AbstractArray{T,3},
                             qmask::AbstractMatrix{Bool},
                             dmask::AbstractMatrix{Bool},
                             neg::T) where {T<:AbstractFloat}
+    require_colocated(Q, gallery, qmask, dmask)
     candidates_forward(array_backend(Q), Q, gallery, idxs, qmask, dmask, neg)
 end
 
@@ -203,16 +204,17 @@ function candidates_forward(::CPU, Q::AbstractArray{T,3},
                             qmask::AbstractMatrix{Bool},
                             dmask::AbstractMatrix{Bool},
                             neg::T) where {T<:AbstractFloat}
-    require_colocated(Q, gallery, qmask, dmask)
-    _, Tq, B, _, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
+    _, Tq, B, Td, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
     C = size(idxs, 1)
     S = fill(neg, C, B)
     args = zeros(Int32, Tq, C, B)
+    Stile, mx, argmax_u = pair_host_scratch(T, Tq, Td)
     @inbounds for b in 1:B, c in 1:C
         j = Int(idxs[c, b])
         (1 <= j <= N) || continue
-        s, au = pair_forward_host(view(Q, :, :, b), view(gallery, :, :, j),
-                                  view(qmask, :, b), view(dmask, :, j), neg)
+        s, au = pair_forward_host!(argmax_u, mx, Stile,
+                                   view(Q, :, :, b), view(gallery, :, :, j),
+                                   view(qmask, :, b), view(dmask, :, j), neg)
         S[c, b] = s
         args[:, c, b] .= au
     end
@@ -234,7 +236,6 @@ function candidates_forward_ka(backend, Q::AbstractArray{T,3},
                                qmask::AbstractMatrix{Bool},
                                dmask::AbstractMatrix{Bool},
                                neg::T) where {T<:AbstractFloat}
-    require_colocated(Q, gallery, qmask, dmask)
     _, Tq, B, _, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
     idx = indices_on(Q, idxs)
     C = size(idx, 1)

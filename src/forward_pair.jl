@@ -19,14 +19,32 @@ function require_pair_shapes(q, d, qmask, dmask)
     dim, Tq, Td
 end
 
+"""Allocate host scratch for tiled pair GEMM (`DOC_TILE × Tq`, clipped to `Td`)."""
+function pair_host_scratch(::Type{T}, Tq::Int, Td::Int) where {T}
+    tile = min(DOC_TILE, max(Td, 1))
+    Matrix{T}(undef, tile, Tq), zeros(T, Tq), zeros(Int32, Tq)
+end
+
 function pair_forward_host(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                            qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
-                           ::T) where {T<:AbstractFloat}
+                           neg::T) where {T<:AbstractFloat}
     _, Tq, Td = require_pair_shapes(q, d, qmask, dmask)
-    argmax_u = zeros(Int32, Tq)
-    mx = zeros(T, Tq)
-    tile = min(DOC_TILE, max(Td, 1))
-    Stile = Matrix{T}(undef, tile, Tq)
+    Stile, mx, argmax_u = pair_host_scratch(T, Tq, Td)
+    pair_forward_host!(argmax_u, mx, Stile, q, d, qmask, dmask, neg)
+end
+
+"""In-place host pair forward using caller-owned `Stile`, `mx`, `argmax_u` scratch."""
+function pair_forward_host!(argmax_u::AbstractVector{Int32}, mx::AbstractVector{T},
+                            Stile::AbstractMatrix{T},
+                            q::AbstractMatrix{T}, d::AbstractMatrix{T},
+                            qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
+                            ::T) where {T<:AbstractFloat}
+    _, Tq, Td = require_pair_shapes(q, d, qmask, dmask)
+    length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u"))
+    length(mx) == Tq || throw(DimensionMismatch("mx"))
+    size(Stile, 2) == Tq || throw(DimensionMismatch("Stile"))
+    fill!(argmax_u, Int32(0))
+    fill!(mx, zero(T))
     u = 1
     while u <= Td
         u_end = min(u + DOC_TILE - 1, Td)
@@ -47,7 +65,6 @@ function pair_forward_host(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     end
     score = zero(T)
     @inbounds for t in 1:Tq
-        # Empty doc (no dmask hit) leaves argmax 0 — contribute 0, not a sentinel.
         qmask[t] && argmax_u[t] > 0 && (score += mx[t])
     end
     score, argmax_u
@@ -57,7 +74,6 @@ function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                          qmask::AbstractVector{Bool},
                          dmask::AbstractVector{Bool},
                          ::T) where {T<:AbstractFloat}
-    require_colocated(q, d, qmask, dmask)
     _, Tq, _ = require_pair_shapes(q, d, qmask, dmask)
     backend = array_backend(q)
     argmax_u = zeros_like(q, Int32, Tq)
@@ -67,10 +83,12 @@ function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     sum(partial), argmax_u
 end
 
-pair_forward(q::AbstractMatrix{T}, d::AbstractMatrix{T},
-             qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
-             neg::T) where {T<:AbstractFloat} =
+function pair_forward(q::AbstractMatrix{T}, d::AbstractMatrix{T},
+                      qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
+                      neg::T) where {T<:AbstractFloat}
+    require_colocated(q, d, qmask, dmask)
     pair_forward(array_backend(q), q, d, qmask, dmask, neg)
+end
 
 pair_forward(::CPU, q::AbstractMatrix{T}, d::AbstractMatrix{T},
              qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},

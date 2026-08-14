@@ -1,95 +1,9 @@
-# backward.jl — Sparse MaxSim pullback (paper §4.2, Eqs. 2–3).
+# backward_layouts.jl — Paired / in-batch / candidate sparse pullbacks.
 #
-# CPU: sequential gather + [`accumulate_doc!`](@ref) (BitArray-safe).
-# GPU and other KA backends: gather/scatter kernels; no host copies of Q/D.
-#
-# InvGrid on every KA backend builds a real inverse-grid CSR (Alg. 3) via the
-# count → prefix → fill kernels in `kernels_backward.jl`, then accumulates.
-#
-# Every layout exposes its KA implementation as a named `*_pullback_ka`
-# function so the device code paths can be exercised on the CPU backend in CI
-# (backend dispatch alone can never select them on a host array).
+# Same contract as `backward_pair.jl`: CPU sequential paths, KA gather/scatter,
+# InvGrid via device CSR. Named `*_pullback_ka` entry points for CI on CPU().
 
-function pair_pullback(δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
-                       qmask::AbstractVector{Bool},
-                       argmax_u::AbstractVector{<:Integer},
-                       mode::BackwardStrategy) where {T<:AbstractFloat}
-    pair_pullback(array_backend(q), δ, q, d, qmask, argmax_u, mode)
-end
-
-function pair_pullback(::CPU, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
-                       qmask::AbstractVector{Bool},
-                       argmax_u::AbstractVector{<:Integer},
-                       mode::BackwardStrategy) where {T<:AbstractFloat}
-    dq = zeros_like(q)
-    dd = zeros_like(d)
-    δ == zero(T) && return dq, dd
-    dim, Tq = size(q)
-    Td = size(d, 2)
-    length(qmask) == Tq || throw(DimensionMismatch("qmask vs query tokens"))
-    length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
-    δ_src = zeros(T, Tq)
-    @inbounds for t in 1:Tq
-        qmask[t] || continue
-        u = Int(argmax_u[t])
-        (1 <= u <= Td) || continue
-        δ_src[t] = δ
-        @simd for k in 1:dim
-            dq[k, t] += δ * d[k, u]
-        end
-    end
-    accumulate_doc!(mode, dd, q, δ_src, argmax_u)
-    dq, dd
-end
-
-function pair_pullback(backend::Backend, δ::T, q::AbstractMatrix{T},
-                       d::AbstractMatrix{T},
-                       qmask::AbstractVector{Bool},
-                       argmax_u::AbstractVector{<:Integer},
-                       mode::BackwardStrategy) where {T<:AbstractFloat}
-    pair_pullback_ka(backend, δ, q, d, qmask, argmax_u, mode)
-end
-
-function pair_pullback_ka(backend, δ::T, q::AbstractMatrix{T}, d::AbstractMatrix{T},
-                          qmask::AbstractVector{Bool},
-                          argmax_u::AbstractVector{<:Integer},
-                          mode::BackwardStrategy) where {T<:AbstractFloat}
-    dq = zeros_like(q)
-    dd = zeros_like(d)
-    δ == zero(T) && return dq, dd
-    dim, Tq = size(q)
-    Td = size(d, 2)
-    length(qmask) == Tq || throw(DimensionMismatch("qmask vs query tokens"))
-    length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u vs query tokens"))
-    launch!(gather_pair_kernel!, backend, (dim, Tq), dq, d, qmask, argmax_u, δ, Td)
-    scatter_pair!(mode, backend, dd, q, qmask, argmax_u, δ)
-    sync!(backend)
-    dq, dd
-end
-
-scatter_pair!(::AtomicUnified, backend, dd, q, qmask, argmax_u, δ) =
-    launch!(scatter_pair_atomic_kernel!, backend, (size(q, 1), size(q, 2)),
-            dd, q, qmask, argmax_u, δ, size(dd, 2))
-
-function scatter_pair!(::InvGrid, backend, dd, q, qmask, argmax_u, δ)
-    Td = size(dd, 2)
-    Tq = size(q, 2)
-    row_ptr, col_idx = build_pair_csr(backend, q, argmax_u, Td, Tq)
-    launch!(scatter_pair_csr_kernel!, backend, (size(dd, 1), Td),
-            dd, q, row_ptr, col_idx, δ)
-    nothing
-end
-
-"""Device CSR for one pair: `argmax_u[t] → u` (Alg. 3 counting sort)."""
-function build_pair_csr(backend, prototype, argmax_u, Td, Tq)
-    row_ptr = zeros_like(prototype, Int32, Td + 1)
-    launch!(csr_count_pair_kernel!, backend, Tq, row_ptr, argmax_u, Td)
-    launch!(csr_prefix_pair_kernel!, backend, 1, row_ptr, Td)
-    cursor = copy(row_ptr)
-    col_idx = zeros_like(prototype, Int32, Tq)
-    launch!(csr_fill_pair_kernel!, backend, Tq, col_idx, cursor, argmax_u, Td)
-    row_ptr, col_idx
-end
+# ---- paired ------------------------------------------------------------------
 
 function paired_pullback(Δ::AbstractVector{T}, Q, D, qmask, args, inv_n,
                          mode::BackwardStrategy) where {T}
@@ -142,15 +56,7 @@ function scatter_paired!(::InvGrid, backend, dD, Q, qmask, args, Δ, inv_n)
     nothing
 end
 
-function build_paired_csr(backend, prototype, args, Td, Tq, B)
-    row_ptr = zeros_like(prototype, Int32, Td + 1, B)
-    launch!(csr_count_paired_kernel!, backend, (Tq, B), row_ptr, args, Td)
-    launch!(csr_prefix_paired_kernel!, backend, B, row_ptr, Td)
-    cursor = copy(row_ptr)
-    col_idx = zeros_like(prototype, Int32, Tq * B)
-    launch!(csr_fill_paired_kernel!, backend, (Tq, B), col_idx, cursor, args, Td, Tq)
-    row_ptr, col_idx
-end
+# ---- in-batch ----------------------------------------------------------------
 
 function inbatch_pullback(Δ::AbstractMatrix{T}, Q, D, qmask, args, inv_n,
                           mode::BackwardStrategy) where {T}
@@ -215,16 +121,7 @@ function scatter_inbatch!(::InvGrid, backend, dD, Q, qmask, args, Δ, inv_n)
     nothing
 end
 
-function build_inbatch_csr(backend, prototype, args, Td, Tq, Bq, Bd)
-    row_ptr = zeros_like(prototype, Int32, Td + 1, Bd)
-    launch!(csr_count_inbatch_kernel!, backend, (Tq, Bd, Bq), row_ptr, args, Td)
-    launch!(csr_prefix_inbatch_kernel!, backend, Bd, row_ptr, Td)
-    cursor = copy(row_ptr)
-    col_idx = zeros_like(prototype, Int32, Tq * Bq * Bd)
-    launch!(csr_fill_inbatch_kernel!, backend, (Tq, Bd, Bq),
-            col_idx, cursor, args, Td, Tq, Bq)
-    row_ptr, col_idx
-end
+# ---- candidates --------------------------------------------------------------
 
 function candidates_pullback(Δ::AbstractMatrix{T}, Q, gallery, idxs, qmask, args,
                              inv_n, mode::BackwardStrategy) where {T}
@@ -295,17 +192,4 @@ function scatter_candidates!(::InvGrid, backend, dG, Q, idxs, qmask, args, Δ, i
     launch!(scatter_candidates_csr_kernel!, backend, (size(dG, 1), Td, N),
             dG, Q, row_ptr, col_idx, Δ, inv_n, Td, Tq, C)
     nothing
-end
-
-function build_candidates_csr(backend, prototype, idxs, args, Td, N, Tq, C, B)
-    n_dest = Td * N
-    row_ptr = zeros_like(prototype, Int32, n_dest + 1)
-    launch!(csr_count_candidates_kernel!, backend, (Tq, C, B),
-            row_ptr, idxs, args, Td, N)
-    launch!(csr_prefix_candidates_kernel!, backend, 1, row_ptr, n_dest)
-    cursor = copy(row_ptr)
-    col_idx = zeros_like(prototype, Int32, Tq * C * B)
-    launch!(csr_fill_candidates_kernel!, backend, (Tq, C, B),
-            col_idx, cursor, idxs, args, Td, N, Tq, C)
-    row_ptr, col_idx
 end
