@@ -131,3 +131,20 @@ end
     @test dq_k ≈ dq_h
     @test dd_k ≈ dd_h
 end
+
+@testset "InvGrid KA CSR respects qmask (dirty tape)" begin
+    # Own forward always writes argmax=0 under !qmask; this guards a hand-built
+    # or stale tape where a masked token still points at a document token.
+    T = Float32
+    backend = KernelAbstractions.CPU()
+    q, d = randn(T, 4, 3), randn(T, 4, 5)
+    qm = BitVector([true, false, true])
+    arg = Int32[1, 2, 1]   # masked middle token still has argmax 2
+    δ = one(T)
+    _, dd_h = FlashMaxSim.pair_pullback(δ, q, d, qm, arg, InvGrid())
+    _, dd_a = FlashMaxSim.pair_pullback_ka(backend, δ, q, d, qm, arg, AtomicUnified())
+    _, dd_i = FlashMaxSim.pair_pullback_ka(backend, δ, q, d, qm, arg, InvGrid())
+    @test dd_i ≈ dd_h
+    @test dd_i ≈ dd_a
+    @test all(iszero, dd_i[:, 2])
+end

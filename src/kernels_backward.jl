@@ -124,10 +124,17 @@ end
 # ---- InvGrid CSR build (Alg. 3 counting sort) --------------------------------
 # `row_ptr` is length `n_dest+1` with 0-based exclusive ends (same as host).
 # `@atomic x += v` returns the **new** value — used as 1-based `col_idx` index.
+# Count/fill gate on `qmask` so masked sources are dropped even if argmax ≠ 0
+# (matches AtomicUnified and the host `δ_src` path).
 
-@kernel function csr_count_pair_kernel!(row_ptr, @Const(argmax_u), Td)
+@kernel function csr_copy_kernel!(dst, @Const(src))
+    I = @index(Global, Cartesian)
+    @inbounds dst[I] = src[I]
+end
+
+@kernel function csr_count_pair_kernel!(row_ptr, @Const(argmax_u), @Const(qmask), Td)
     t = @index(Global)
-    @inbounds begin
+    @inbounds if qmask[t]
         u = Int(argmax_u[t])
         if 1 <= u <= Td
             @atomic row_ptr[u + 1] += Int32(1)
@@ -142,9 +149,10 @@ end
     end
 end
 
-@kernel function csr_fill_pair_kernel!(col_idx, cursor, @Const(argmax_u), Td)
+@kernel function csr_fill_pair_kernel!(col_idx, cursor, @Const(argmax_u),
+                                       @Const(qmask), Td)
     t = @index(Global)
-    @inbounds begin
+    @inbounds if qmask[t]
         u = Int(argmax_u[t])
         if 1 <= u <= Td
             pos = @atomic cursor[u] += Int32(1)
@@ -153,9 +161,9 @@ end
     end
 end
 
-@kernel function csr_count_paired_kernel!(row_ptr, @Const(args), Td)
+@kernel function csr_count_paired_kernel!(row_ptr, @Const(args), @Const(qmask), Td)
     t, b = @index(Global, NTuple)
-    @inbounds begin
+    @inbounds if qmask[t, b]
         u = Int(args[t, b])
         if 1 <= u <= Td
             @atomic row_ptr[u + 1, b] += Int32(1)
@@ -170,9 +178,10 @@ end
     end
 end
 
-@kernel function csr_fill_paired_kernel!(col_idx, cursor, @Const(args), Td, Tq)
+@kernel function csr_fill_paired_kernel!(col_idx, cursor, @Const(args),
+                                         @Const(qmask), Td, Tq)
     t, b = @index(Global, NTuple)
-    @inbounds begin
+    @inbounds if qmask[t, b]
         u = Int(args[t, b])
         if 1 <= u <= Td
             pos = @atomic cursor[u, b] += Int32(1)
@@ -181,9 +190,9 @@ end
     end
 end
 
-@kernel function csr_count_inbatch_kernel!(row_ptr, @Const(args), Td)
+@kernel function csr_count_inbatch_kernel!(row_ptr, @Const(args), @Const(qmask), Td)
     t, j, i = @index(Global, NTuple)
-    @inbounds begin
+    @inbounds if qmask[t, i]
         u = Int(args[t, j, i])
         if 1 <= u <= Td
             @atomic row_ptr[u + 1, j] += Int32(1)
@@ -198,9 +207,10 @@ end
     end
 end
 
-@kernel function csr_fill_inbatch_kernel!(col_idx, cursor, @Const(args), Td, Tq, Bq)
+@kernel function csr_fill_inbatch_kernel!(col_idx, cursor, @Const(args),
+                                          @Const(qmask), Td, Tq, Bq)
     t, j, i = @index(Global, NTuple)
-    @inbounds begin
+    @inbounds if qmask[t, i]
         u = Int(args[t, j, i])
         if 1 <= u <= Td
             pos = @atomic cursor[u, j] += Int32(1)
@@ -211,9 +221,9 @@ end
 end
 
 @kernel function csr_count_candidates_kernel!(row_ptr, @Const(idxs), @Const(args),
-                                              Td, N)
+                                              @Const(qmask), Td, N)
     t, c, b = @index(Global, NTuple)
-    @inbounds begin
+    @inbounds if qmask[t, b]
         j = Int(idxs[c, b])
         if 1 <= j <= N
             u = Int(args[t, c, b])
@@ -233,9 +243,10 @@ end
 end
 
 @kernel function csr_fill_candidates_kernel!(col_idx, cursor, @Const(idxs),
-                                             @Const(args), Td, N, Tq, C)
+                                             @Const(args), @Const(qmask),
+                                             Td, N, Tq, C)
     t, c, b = @index(Global, NTuple)
-    @inbounds begin
+    @inbounds if qmask[t, b]
         j = Int(idxs[c, b])
         if 1 <= j <= N
             u = Int(args[t, c, b])

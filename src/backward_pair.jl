@@ -68,7 +68,7 @@ scatter_pair!(::AtomicUnified, backend, dd, q, qmask, argmax_u, δ) =
 function scatter_pair!(::InvGrid, backend, dd, q, qmask, argmax_u, δ)
     Td = size(dd, 2)
     Tq = size(q, 2)
-    row_ptr, col_idx = build_pair_csr(backend, q, argmax_u, Td, Tq)
+    row_ptr, col_idx = build_pair_csr(backend, q, argmax_u, qmask, Td, Tq)
     launch!(scatter_pair_csr_kernel!, backend, (size(dd, 1), Td),
             dd, q, row_ptr, col_idx, δ)
     nothing

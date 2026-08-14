@@ -50,7 +50,7 @@ scatter_paired!(::AtomicUnified, backend, dD, Q, qmask, args, Δ, inv_n) =
 function scatter_paired!(::InvGrid, backend, dD, Q, qmask, args, Δ, inv_n)
     Td = size(dD, 2)
     Tq, B = size(Q, 2), size(Q, 3)
-    row_ptr, col_idx = build_paired_csr(backend, Q, args, Td, Tq, B)
+    row_ptr, col_idx = build_paired_csr(backend, Q, args, qmask, Td, Tq, B)
     launch!(scatter_paired_csr_kernel!, backend, (size(dD, 1), Td, B),
             dD, Q, row_ptr, col_idx, Δ, inv_n, Tq)
     nothing
@@ -115,7 +115,7 @@ scatter_inbatch!(::AtomicUnified, backend, dD, Q, qmask, args, Δ, inv_n) =
 function scatter_inbatch!(::InvGrid, backend, dD, Q, qmask, args, Δ, inv_n)
     Td, Bd = size(dD, 2), size(dD, 3)
     Tq, Bq = size(Q, 2), size(Q, 3)
-    row_ptr, col_idx = build_inbatch_csr(backend, Q, args, Td, Tq, Bq, Bd)
+    row_ptr, col_idx = build_inbatch_csr(backend, Q, args, qmask, Td, Tq, Bq, Bd)
     launch!(scatter_inbatch_csr_kernel!, backend, (size(dD, 1), Td, Bd),
             dD, Q, row_ptr, col_idx, Δ, inv_n, Tq, Bq)
     nothing
@@ -188,7 +188,7 @@ function scatter_candidates!(::InvGrid, backend, dG, Q, idxs, qmask, args, Δ, i
     Td, N = size(dG, 2), size(dG, 3)
     Tq, B = size(Q, 2), size(Q, 3)
     C = size(idxs, 1)
-    row_ptr, col_idx = build_candidates_csr(backend, Q, idxs, args, Td, N, Tq, C, B)
+    row_ptr, col_idx = build_candidates_csr(backend, Q, idxs, args, qmask, Td, N, Tq, C, B)
     launch!(scatter_candidates_csr_kernel!, backend, (size(dG, 1), Td, N),
             dG, Q, row_ptr, col_idx, Δ, inv_n, Td, Tq, C)
     nothing
