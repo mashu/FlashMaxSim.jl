@@ -4,10 +4,20 @@
 # `finish!` syncs only on CPU (KA CPU is async); GPU relies on stream ordering
 # so device→device work stays off the host.
 
+range_count(n::Integer) = Int(n)
+range_count(n::Tuple) = prod(n)
+
 """Enqueue a kernel. No device synchronize — see [`finish!`](@ref)."""
 function launch!(kernel, backend, ndrange, args...)
-    prod(ndrange) == 0 && return nothing
+    iszero(range_count(ndrange)) && return nothing
     kernel(backend)(args...; ndrange)
+    nothing
+end
+
+"""Enqueue with a static workgroup size (SRAM-tiled GPU scans)."""
+function launch_grouped!(kernel, backend, group, ndrange, args...)
+    iszero(range_count(ndrange)) && return nothing
+    kernel(backend, group)(args...; ndrange)
     nothing
 end
 

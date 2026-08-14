@@ -4,8 +4,8 @@
 # `view` / `Adjoint` / `PermutedDimsArray` must take the BLAS path. Named
 # `*_forward_ka` entry points exercise device kernels on `CPU()` in CI.
 #
-# In-batch: chunked doc GEMM (`D'Q`) + light argmax accumulate — never a
-# `Tq×Bd×Bq` fused similarity kernel (pathological at train batch sizes).
+# Pair / paired / candidates: BLAS tiles on CPU `Array`; GPU KA uses SRAM-tiled
+# Q/D GEMM (paper Alg. 1). In-batch: chunked doc GEMM (`D'Q`) + light argmax.
 
 """Target bytes for one in-batch GEMM tile (`Td × C × Tq × Bq`)."""
 const INBATCH_TILE_BYTES = 64 * 1024 * 1024
@@ -115,11 +115,20 @@ function paired_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3}
     _, Tq, _, B = require_paired_shapes(Q, D, qmask, dmask)
     args = zeros_like(Q, Int32, Tq, B)
     partial = zeros_like(Q, T, Tq, B)
-    launch!(paired_token_kernel!, backend, (Tq, B),
-            args, partial, Q, D, qmask, dmask)
+    launch_paired_scan!(backend, args, partial, Q, D, qmask, dmask)
     scores = vec(sum(partial; dims = 1))   # stays on-device for CuArray
     finish!(backend)
     scores, args
+end
+
+launch_paired_scan!(backend::Backend, args, partial, Q, D, qmask, dmask) =
+    launch!(paired_token_kernel!, backend, (size(Q, 2), size(Q, 3)),
+            args, partial, Q, D, qmask, dmask)
+
+function launch_paired_scan!(backend::GPU, args, partial, Q, D, qmask, dmask)
+    nd = (size(Q, 2), size(Q, 3))
+    launch_grouped!(paired_tile_kernel!, backend, query_tile_group(nd), nd,
+                    args, partial, Q, D, qmask, dmask)
 end
 
 # ---- in-batch ----------------------------------------------------------------
@@ -242,11 +251,20 @@ function candidates_forward_ka(backend, Q::AbstractArray{T,3},
     C = size(idx, 1)
     args = zeros_like(Q, Int32, Tq, C, B)
     partial = zeros_like(Q, T, Tq, C, B)
-    launch!(candidates_token_kernel!, backend, (Tq, C, B),
-            args, partial, Q, gallery, idx, qmask, dmask, N)
+    launch_candidates_scan!(backend, args, partial, Q, gallery, idx, qmask, dmask, N)
     S = dropdims(sum(partial; dims = 1); dims = 1)   # on-device
     valid = (idx .>= 1) .& (idx .<= N)
     out = ifelse.(valid, S, neg)
     finish!(backend)
     out, args
+end
+
+launch_candidates_scan!(backend::Backend, args, partial, Q, gallery, idx, qmask, dmask, N) =
+    launch!(candidates_token_kernel!, backend, (size(Q, 2), size(idx, 1), size(Q, 3)),
+            args, partial, Q, gallery, idx, qmask, dmask, N)
+
+function launch_candidates_scan!(backend::GPU, args, partial, Q, gallery, idx, qmask, dmask, N)
+    nd = (size(Q, 2), size(idx, 1), size(Q, 3))
+    launch_grouped!(candidates_tile_kernel!, backend, query_tile_group(nd), nd,
+                    args, partial, Q, gallery, idx, qmask, dmask, N)
 end

@@ -19,6 +19,15 @@
     idxs = Int32[1 2 3; 4 0 5]
     inv_n = ones(T, B)
 
+    @testset "pair forward KA" begin
+        q, d = Q[:, :, 1], D[:, :, 1]
+        qm1, dm1 = qm[:, 1], dm[:, 1]
+        s_h, a_h = FlashMaxSim.pair_forward_host(q, d, qm1, dm1, neg)
+        s_k, a_k = FlashMaxSim.pair_forward_ka(backend, q, d, qm1, dm1, neg)
+        @test a_k == a_h
+        @test only(s_k) ≈ s_h rtol=1e-5 atol=1e-5
+    end
+
     @testset "paired forward" begin
         s_h, a_h = FlashMaxSim.paired_forward(Q, D, qm, dm, neg)
         s_k, a_k = FlashMaxSim.paired_forward_ka(backend, Q, D, qm, dm, neg)

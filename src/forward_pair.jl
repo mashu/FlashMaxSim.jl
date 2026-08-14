@@ -1,7 +1,8 @@
 # forward_pair.jl — Fused single-pair MaxSim (paper Alg. 1).
 #
 # Host backend uses BLAS GEMM over document tiles (`DOC_TILE × Tq` scratch).
-# Other backends keep argmax and the score on-device (length-1 buffer) via KA.
+# GPU backends stream Q/D tiles through SRAM (paper Alg. 1); CPU KA uses a
+# scalar token scan. Scores stay on-device (length-1 buffer).
 # `neg` is unused in the pair scan — it is a candidate-index sentinel only.
 #
 # Dispatch is on the *backend*, not on the concrete array type: a `view`,
@@ -73,16 +74,29 @@ end
 function pair_forward_ka(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                          qmask::AbstractVector{Bool},
                          dmask::AbstractVector{Bool},
+                         neg::T) where {T<:AbstractFloat}
+    pair_forward_ka(array_backend(q), q, d, qmask, dmask, neg)
+end
+
+function pair_forward_ka(backend::Backend, q::AbstractMatrix{T}, d::AbstractMatrix{T},
+                         qmask::AbstractVector{Bool},
+                         dmask::AbstractVector{Bool},
                          ::T) where {T<:AbstractFloat}
     _, Tq, _ = require_pair_shapes(q, d, qmask, dmask)
-    backend = array_backend(q)
     argmax_u = zeros_like(q, Int32, Tq)
     partial = zeros_like(q, T, Tq)
-    launch!(pair_token_kernel!, backend, Tq, argmax_u, partial, q, d, qmask, dmask)
+    launch_pair_scan!(backend, argmax_u, partial, q, d, qmask, dmask)
     score = sum_length1(backend, partial)   # length-1, same backend — no host sum
     finish!(backend)
     score, argmax_u
 end
+
+launch_pair_scan!(backend::Backend, argmax_u, partial, q, d, qmask, dmask) =
+    launch!(pair_token_kernel!, backend, size(q, 2), argmax_u, partial, q, d, qmask, dmask)
+
+launch_pair_scan!(backend::GPU, argmax_u, partial, q, d, qmask, dmask) =
+    launch_grouped!(pair_tile_kernel!, backend, query_tile_group(size(q, 2)),
+                    size(q, 2), argmax_u, partial, q, d, qmask, dmask)
 
 function pair_forward(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                       qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},

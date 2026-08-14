@@ -98,4 +98,21 @@
     s_gpu = maxsim(qg, dg, qmg, dmg; neg)
     @test only(Array(s_gpu)) ≈ maxsim(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
     @test only(Array(s_gpu)) ≈ maxsim_dense(q, d, qm, dm; neg) rtol=1e-5 atol=1e-5
+
+    # SRAM tiles: dim, Tq, Td all straddle TILE_K/Q/D = 32
+    dim2, Tq2, Td2 = 40, 33, 65
+    q2 = randn(T, dim2, Tq2)
+    d2 = randn(T, dim2, Td2)
+    q2 ./= sqrt.(sum(abs2, q2; dims = 1) .+ eps(T))
+    d2 ./= sqrt.(sum(abs2, d2; dims = 1) .+ eps(T))
+    qm2, dm2 = trues(Tq2), trues(Td2)
+    q2g, d2g = CuArray(q2), CuArray(d2)
+    qm2g, dm2g = CuArray(collect(qm2)), CuArray(collect(dm2))
+    @test only(Array(maxsim(q2g, d2g, qm2g, dm2g))) ≈ maxsim(q2, d2, qm2, dm2) rtol=1e-5 atol=1e-5
+    Q2, D2 = randn(T, dim2, Tq2, 2), randn(T, dim2, Td2, 2)
+    @test Array(maxsim(CuArray(Q2), CuArray(D2))) ≈ maxsim(Q2, D2) rtol=1e-5 atol=1e-5
+    idxs2 = Int32[1 2; 0 1]
+    G2 = randn(T, dim2, Td2, 3)
+    @test Array(maxsim(CuArray(Q2), CuArray(G2), CuArray(idxs2))) ≈
+          maxsim(Q2, G2, idxs2) rtol=1e-5 atol=1e-5
 end
