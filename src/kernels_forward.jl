@@ -4,10 +4,17 @@
 # CPU KA: scalar token loop (BLAS host path is separate). First valid document
 # token always wins (`arg == 0 || s > mx`). Empty / fully-masked docs contribute 0.
 
-"""Query-token workgroup width / document tile / embedding tile (Alg. 1)."""
+"""Query-token workgroup width / document tile / embedding tile (Alg. 1 / §F.9).
+
+`TILE_K` is the split-d inner tile: SRAM holds `(TILE_K, TILE_Q/D)`, not the
+full embedding, so occupancy does not cliff at `d>512`. Float16 dots accumulate
+in FP32 (`dot_accum`)."""
 const TILE_Q = 32
 const TILE_D = 32
 const TILE_K = 32
+
+dot_accum(::Type{Float16}) = Float32
+dot_accum(::Type{T}) where {T<:AbstractFloat} = T
 
 query_tile_group(::Integer) = TILE_Q
 query_tile_group(::Tuple{Int}) = (TILE_Q,)
@@ -100,10 +107,10 @@ end
     end
 end
 
-# ---- GPU SRAM-tiled scan (paper Alg. 1) --------------------------------------
+# ---- GPU SRAM-tiled scan (paper Alg. 1 / §F.9 split-d) -----------------------
 # One workgroup = TILE_Q query tokens of one (query, document) pair. Document
-# tiles stream through SRAM; the embedding dim is split so the tile fits
-# on-chip at any d (split-d). Padded lanes stay live through @synchronize.
+# tiles stream through SRAM; the embedding dim is split on TILE_K so the tile
+# fits on-chip at any d. Padded lanes stay live through @synchronize.
 
 @kernel unsafe_indices=true function pair_tile_kernel!(argmax_out, partial,
                                                        @Const(q), @Const(d),
@@ -113,19 +120,20 @@ end
     gs = @uniform prod(@groupsize())
     t = (gid - 1) * gs + lid
     T = eltype(q)
+    AT = dot_accum(T)
     dim = @uniform size(q, 1)
     Td = @uniform size(d, 2)
     Tq = @uniform size(q, 2)
     valid = t <= Tq && @inbounds(qmask[t])
     Qs = @localmem T (TILE_K + 1, TILE_Q)
     Ds = @localmem T (TILE_K + 1, TILE_D)
-    acc = @private T (TILE_D,)
-    mx = zero(T)
+    acc = @private AT (TILE_D,)
+    mx = zero(AT)
     arg = Int32(0)
     ncell = TILE_K * TILE_D
     @inbounds for u0 in 1:TILE_D:Td
         for uu in 1:TILE_D
-            acc[uu] = zero(T)
+            acc[uu] = zero(AT)
         end
         for k0 in 1:TILE_K:dim
             for e0 in 0:gs:(ncell - 1)
@@ -146,7 +154,7 @@ end
             for uu in 1:TILE_D
                 s = acc[uu]
                 for kk in 1:TILE_K
-                    s += Qs[kk, lid] * Ds[kk, uu]
+                    s += convert(AT, Qs[kk, lid]) * convert(AT, Ds[kk, uu])
                 end
                 acc[uu] = s
             end
@@ -166,7 +174,7 @@ end
         end
     end
     if t <= Tq
-        @inbounds partial[t] = arg == Int32(0) ? zero(T) : mx
+        @inbounds partial[t] = arg == Int32(0) ? zero(T) : T(mx)
         @inbounds argmax_out[t] = arg
     end
 end
@@ -181,6 +189,7 @@ end
     t = (gt - 1) * tgs + lt
     b = (gb - 1) * bgs + lb
     T = eltype(Q)
+    AT = dot_accum(T)
     dim = @uniform size(Q, 1)
     Td = @uniform size(D, 2)
     Tq = @uniform size(Q, 2)
@@ -189,15 +198,15 @@ end
     valid = live && t <= Tq && @inbounds(qmask[t, b])
     Qs = @localmem T (TILE_K + 1, TILE_Q)
     Ds = @localmem T (TILE_K + 1, TILE_D)
-    acc = @private T (TILE_D,)
-    mx = zero(T)
+    acc = @private AT (TILE_D,)
+    mx = zero(AT)
     arg = Int32(0)
     ncell = TILE_K * TILE_D
     gs = @uniform prod(@groupsize())
     lid = @index(Local, Linear)
     @inbounds for u0 in 1:TILE_D:Td
         for uu in 1:TILE_D
-            acc[uu] = zero(T)
+            acc[uu] = zero(AT)
         end
         for k0 in 1:TILE_K:dim
             for e0 in 0:gs:(ncell - 1)
@@ -218,7 +227,7 @@ end
             for uu in 1:TILE_D
                 s = acc[uu]
                 for kk in 1:TILE_K
-                    s += Qs[kk, lt] * Ds[kk, uu]
+                    s += convert(AT, Qs[kk, lt]) * convert(AT, Ds[kk, uu])
                 end
                 acc[uu] = s
             end
@@ -238,7 +247,7 @@ end
         end
     end
     if live && t <= Tq
-        @inbounds partial[t, b] = arg == Int32(0) ? zero(T) : mx
+        @inbounds partial[t, b] = arg == Int32(0) ? zero(T) : T(mx)
         @inbounds argmax_out[t, b] = arg
     end
 end
@@ -256,6 +265,7 @@ end
     c = (gc - 1) * cgs + lc
     b = (gb - 1) * bgs + lb
     T = eltype(Q)
+    AT = dot_accum(T)
     dim = @uniform size(Q, 1)
     Td = @uniform size(gallery, 2)
     Tq = @uniform size(Q, 2)
@@ -270,8 +280,8 @@ end
     valid = in_gal && t <= Tq && @inbounds(qmask[t, b])
     Qs = @localmem T (TILE_K + 1, TILE_Q)
     Ds = @localmem T (TILE_K + 1, TILE_D)
-    acc = @private T (TILE_D,)
-    mx = zero(T)
+    acc = @private AT (TILE_D,)
+    mx = zero(AT)
     arg = Int32(0)
     ncell = TILE_K * TILE_D
     gs = @uniform prod(@groupsize())
@@ -279,7 +289,7 @@ end
     if in_gal
         @inbounds for u0 in 1:TILE_D:Td
             for uu in 1:TILE_D
-                acc[uu] = zero(T)
+                acc[uu] = zero(AT)
             end
             for k0 in 1:TILE_K:dim
                 for e0 in 0:gs:(ncell - 1)
@@ -300,7 +310,7 @@ end
                 for uu in 1:TILE_D
                     s = acc[uu]
                     for kk in 1:TILE_K
-                        s += Qs[kk, lt] * Ds[kk, uu]
+                        s += convert(AT, Qs[kk, lt]) * convert(AT, Ds[kk, uu])
                     end
                     acc[uu] = s
                 end
@@ -321,7 +331,7 @@ end
         end
     end
     if live && t <= Tq
-        @inbounds partial[t, c, b] = (!in_gal || arg == Int32(0)) ? zero(T) : mx
+        @inbounds partial[t, c, b] = (!in_gal || arg == Int32(0)) ? zero(T) : T(mx)
         @inbounds argmax_out[t, c, b] = arg
     end
 end

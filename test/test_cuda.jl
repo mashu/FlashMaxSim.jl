@@ -169,4 +169,19 @@
     gallery16 = Float16.(gallery)
     @test Array(maxsim(CuArray(Q16), CuArray(gallery16), idxg)) ≈
           maxsim(Q16, gallery16, idxs) rtol=5e-2 atol=5e-2
+
+    # split-d: embedding dim past the paper's SRAM-spill cliff (d>512)
+    dimf, Tqf, Tdf = 768, 8, 17
+    qf, df = randn(T, dimf, Tqf), randn(T, dimf, Tdf)
+    qf ./= sqrt.(sum(abs2, qf; dims = 1) .+ eps(T))
+    df ./= sqrt.(sum(abs2, df; dims = 1) .+ eps(T))
+    qfg, dfg = CuArray(qf), CuArray(df)
+    @test only(Array(maxsim(qfg, dfg))) ≈ maxsim(qf, df) rtol=1e-5 atol=1e-5
+    gqf = gradient(x -> sum(maxsim(x, dfg)), qfg)[1]
+    @test gqf isa CuArray
+    @test cosine(Array(gqf), gradient(x -> maxsim(x, df), qf)[1]) ≥ 0.999
+    qf16, df16 = Float16.(qf), Float16.(df)
+    @test only(Array(maxsim(CuArray(qf16), CuArray(df16)))) ≈ maxsim(qf16, df16) rtol=5e-2 atol=5e-2
+    Pf = pack_docs([df, randn(T, dimf, 5)])
+    @test Array(maxsim(qfg, adapt(CuArray, Pf))) ≈ maxsim(qf, Pf) rtol=1e-5 atol=1e-5
 end

@@ -40,6 +40,7 @@ end
     t = (gt - 1) * tgs + lt
     b = (gb - 1) * bgs + lb
     T = eltype(q)
+    AT = dot_accum(T)
     dim = @uniform size(q, 1)
     Tq = @uniform size(q, 2)
     B = @uniform (length(cu) - 1)
@@ -53,15 +54,15 @@ end
     valid = live && t <= Tq && @inbounds(qmask[t]) && Td > 0
     Qs = @localmem T (TILE_K + 1, TILE_Q)
     Ds = @localmem T (TILE_K + 1, TILE_D)
-    acc = @private T (TILE_D,)
-    mx = zero(T)
+    acc = @private AT (TILE_D,)
+    mx = zero(AT)
     arg = Int32(0)
     ncell = TILE_K * TILE_D
     gs = @uniform prod(@groupsize())
     lid = @index(Local, Linear)
     @inbounds for u0 in 1:TILE_D:Td
         for uu in 1:TILE_D
-            acc[uu] = zero(T)
+            acc[uu] = zero(AT)
         end
         for k0 in 1:TILE_K:dim
             for e0 in 0:gs:(ncell - 1)
@@ -83,7 +84,7 @@ end
             for uu in 1:TILE_D
                 s = acc[uu]
                 for kk in 1:TILE_K
-                    s += Qs[kk, lt] * Ds[kk, uu]
+                    s += convert(AT, Qs[kk, lt]) * convert(AT, Ds[kk, uu])
                 end
                 acc[uu] = s
             end
@@ -102,7 +103,7 @@ end
         end
     end
     if live && t <= Tq
-        @inbounds partial[t, b] = arg == Int32(0) ? zero(T) : mx
+        @inbounds partial[t, b] = arg == Int32(0) ? zero(T) : T(mx)
         @inbounds argmax_out[t, b] = arg
     end
 end
@@ -144,6 +145,7 @@ end
     t = (gt - 1) * tgs + lt
     n = (gn - 1) * ngs + ln
     T = eltype(Qp)
+    AT = dot_accum(T)
     dim = @uniform size(Qp, 1)
     N = @uniform (length(cu_q) - 1)
     live = n <= N
@@ -160,15 +162,15 @@ end
     valid = live && t <= Tq && Td > 0
     Qs = @localmem T (TILE_K + 1, TILE_Q)
     Ds = @localmem T (TILE_K + 1, TILE_D)
-    acc = @private T (TILE_D,)
-    mx = zero(T)
+    acc = @private AT (TILE_D,)
+    mx = zero(AT)
     arg = Int32(0)
     ncell = TILE_K * TILE_D
     gs = @uniform prod(@groupsize())
     lid = @index(Local, Linear)
     @inbounds for u0 in 1:TILE_D:Td
         for uu in 1:TILE_D
-            acc[uu] = zero(T)
+            acc[uu] = zero(AT)
         end
         for k0 in 1:TILE_K:dim
             for e0 in 0:gs:(ncell - 1)
@@ -190,7 +192,7 @@ end
             for uu in 1:TILE_D
                 s = acc[uu]
                 for kk in 1:TILE_K
-                    s += Qs[kk, lt] * Ds[kk, uu]
+                    s += convert(AT, Qs[kk, lt]) * convert(AT, Ds[kk, uu])
                 end
                 acc[uu] = s
             end
@@ -209,7 +211,7 @@ end
         end
     end
     if live && t <= size(partial, 1)
-        @inbounds partial[t, n] = (t <= Tq && arg != Int32(0)) ? mx : zero(T)
+        @inbounds partial[t, n] = (t <= Tq && arg != Int32(0)) ? T(mx) : zero(T)
         @inbounds argmax_out[t, n] = t <= Tq ? arg : Int32(0)
     end
 end

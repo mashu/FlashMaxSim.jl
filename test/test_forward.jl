@@ -89,3 +89,20 @@ end
     @test_throws DimensionMismatch maxsim(Q, gallery, Int32[1 2 3; 0 1 2], trues(3, 2), trues(5, 4))
     @test_throws DimensionMismatch maxsim(Q, randn(T, 5, 5, 4), idxs)
 end
+
+@testset "split-d fat embeddings (d>512)" begin
+    Random.seed!(15)
+    T = Float32
+    dim, Tq, Td = 768, 6, 9
+    q, d = randn(T, dim, Tq), randn(T, dim, Td)
+    qm, dm = trues(Tq), trues(Td)
+    @test maxsim(q, d, qm, dm) ≈ maxsim_dense(q, d, qm, dm) rtol=1e-5 atol=1e-5
+    s_k, a_k = FlashMaxSim.pair_forward_ka(KernelAbstractions.CPU(), q, d, qm, dm, T(0))
+    s_h, a_h = FlashMaxSim.pair_forward_host(q, d, qm, dm, T(0))
+    @test a_k == a_h
+    @test only(s_k) ≈ s_h rtol=1e-5 atol=1e-5
+    Q, D = randn(T, dim, Tq, 2), randn(T, dim, Td, 2)
+    @test maxsim(Q, D) ≈ maxsim_dense(Q, D, trues(Tq, 2), trues(Td, 2)) rtol=1e-5 atol=1e-5
+    P = pack_docs([d, randn(T, dim, 3)])
+    @test maxsim(q, P) ≈ [maxsim(q, d), maxsim(q, P.tokens[:, 10:12])] rtol=1e-5 atol=1e-5
+end

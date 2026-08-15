@@ -26,7 +26,8 @@ Algorithm 3). Exact up to floating-point evaluation order (paper Prop. 1).
 
 Forward and backward run on the **same KernelAbstractions backend** as the
 features (CPU `Array` uses BLAS-tiled GEMM; CUDA / ROCm / Metal use SRAM-tiled
-kernels). `CuArray{Float16}` pair / paired / packed / varlen / candidate /
+kernels with a split-`d` inner K loop, so fat embeddings (`d>512`) stay
+on-chip). `CuArray{Float16}` pair / paired / packed / varlen / candidate /
 in-batch scans use WMMA tensor cores when the device is sm ≥ 7.0. INT8
 indices use INT8 tensor cores on sm ≥ 7.5. Scores, argmax tape, and
 cotangents stay on-device — no host round-trips of `Q` / `D`.
@@ -105,6 +106,7 @@ s = maxsim(qg, dg)
 |:------|:-------------|
 | Alg. 1 materialized `S` then max | `maxsim_dense` (oracle only) |
 | Alg. 2 fused forward (no `S` in HBM) | SRAM-tiled KA kernels; WMMA `tl.dot` equivalent for `CuArray{Float16}` |
+| Split-`d` §F.9 (`d>512`) | Inner `TILE_K` / WMMA-K loop on every scan; SRAM independent of `d`; F16 accumulates in FP32 |
 | In-batch `D'Q` tiles | `inbatch_forward` materializes GEMM chunks (`INBATCH_TILE_BYTES`), not Alg. 2 |
 | Prop. 1 exactness | tests vs `maxsim_dense` |
 | §4.2 Eq. 2–3 sparse grads | ChainRules `rrule` on the feature backend |
@@ -114,9 +116,9 @@ s = maxsim(qg, dg)
 | INT8 deferred dequant | `quantize_int8_symmetric` / `Int8Index` (forward-only; INT8 WMMA on sm ≥ 7.5) |
 | In-batch / candidate scoring | `InBatch`, index-matrix layouts; F16 WMMA on CUDA |
 
-Not ported: split-`d` for `d>512`, Chamfer. Exact FP
-MaxSim scores and sparse AD structure match the paper operator used for
-ColBERT training / reranking.
+Not ported: Chamfer (a different hard-selection operator: min + squared
+Euclidean, not a MaxSim speedup). Exact FP MaxSim scores and sparse AD
+structure match the paper operator used for ColBERT training / reranking.
 
 ## Design
 
