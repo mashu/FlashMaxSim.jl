@@ -44,21 +44,21 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     pair_rrule_pullback(score_out, inv_n, q, d, qmask, argmax_u, cfg.backward)
 end
 
-function pair_rrule_pullback(score_out::T, inv_n::T, q, d, qmask, argmax_u,
-                             mode) where {T<:AbstractFloat}
+function pair_rrule_pullback(score_out::S, inv_n::S, q::AbstractMatrix{T}, d, qmask, argmax_u,
+                             mode) where {S<:AbstractFloat, T<:AbstractFloat}
     function pullback(Δ)
-        δ = as_scalar_cotangent(T, Δ) * inv_n
+        δ = convert_scores(T, as_scalar_cotangent(S, Δ) * inv_n)
         dq, dd = pair_pullback(δ, q, d, qmask, argmax_u, mode)
         (NoTangent(), NoTangent(), dq, dd, NoTangent(), NoTangent())
     end
     score_out, pullback
 end
 
-function pair_rrule_pullback(score_out::AbstractVector{T}, inv_n::AbstractVector{T},
-                             q, d, qmask, argmax_u, mode) where {T<:AbstractFloat}
+function pair_rrule_pullback(score_out::AbstractVector{S}, inv_n::AbstractVector{S},
+                             q::AbstractMatrix{T}, d, qmask, argmax_u, mode) where {S<:AbstractFloat, T<:AbstractFloat}
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, score_out)
-        δ = Δh .* inv_n
+        Δh = as_array_cotangent(S, Δ, score_out)
+        δ = convert_scores(T, Δh .* inv_n)
         dq, dd = pair_pullback(array_backend(q), δ, q, d, qmask, argmax_u, mode)
         (NoTangent(), NoTangent(), dq, dd, NoTangent(), NoTangent())
     end
@@ -70,11 +70,12 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               qmask::AbstractMatrix{Bool},
                               dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     scores, args = paired_forward(Q, D, qmask, dmask, cfg.neg)
-    inv_n = inv_token_counts(qmask, T, cfg.normalize)
+    S = eltype(scores)
+    inv_n = inv_token_counts(qmask, S, cfg.normalize)
     scores_n = cfg.normalize ? length_normalize(scores, inv_n) : scores
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, scores_n)
-        dQ, dD = paired_pullback(Δh, Q, D, qmask, args, inv_n, cfg.backward)
+        Δh = convert_scores(T, as_array_cotangent(S, Δ, scores_n))
+        dQ, dD = paired_pullback(Δh, Q, D, qmask, args, convert_scores(T, inv_n), cfg.backward)
         (NoTangent(), NoTangent(), dQ, dD, NoTangent(), NoTangent())
     end
     scores_n, pullback
@@ -86,11 +87,12 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               dmask::AbstractMatrix{Bool},
                               ::InBatch) where {T<:AbstractFloat}
     S, args = inbatch_forward(Q, D, qmask, dmask, cfg.neg)
-    inv_n = inv_token_counts(qmask, T, cfg.normalize)
+    ST = eltype(S)
+    inv_n = inv_token_counts(qmask, ST, cfg.normalize)
     Sn = cfg.normalize ? length_normalize(S, inv_n) : S
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, Sn)
-        dQ, dD = inbatch_pullback(Δh, Q, D, qmask, args, inv_n, cfg.backward)
+        Δh = convert_scores(T, as_array_cotangent(ST, Δ, Sn))
+        dQ, dD = inbatch_pullback(Δh, Q, D, qmask, args, convert_scores(T, inv_n), cfg.backward)
         (NoTangent(), NoTangent(), dQ, dD, NoTangent(), NoTangent(), NoTangent())
     end
     Sn, pullback
@@ -102,12 +104,13 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               qmask::AbstractMatrix{Bool},
                               dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     S, args = candidates_forward(Q, gallery, idxs, qmask, dmask, cfg.neg)
-    inv_n = inv_token_counts(qmask, T, cfg.normalize)
+    ST = eltype(S)
+    inv_n = inv_token_counts(qmask, ST, cfg.normalize)
     Sn = cfg.normalize ?
          length_normalize_candidates(S, inv_n, idxs, size(gallery, 3), cfg.neg) : S
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, Sn)
-        dQ, dG = candidates_pullback(Δh, Q, gallery, idxs, qmask, args, inv_n, cfg.backward)
+        Δh = convert_scores(T, as_array_cotangent(ST, Δ, Sn))
+        dQ, dG = candidates_pullback(Δh, Q, gallery, idxs, qmask, args, convert_scores(T, inv_n), cfg.backward)
         (NoTangent(), NoTangent(), dQ, dG, NoTangent(), NoTangent(), NoTangent())
     end
     Sn, pullback
@@ -119,8 +122,8 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     scores, args = packed_forward(q, D, qmask, cfg.neg)
     scores_n, inv_n = packed_finalize(scores, qmask, cfg.normalize)
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, scores_n)
-        dq, dP = packed_pullback(Δh, q, D, qmask, args, inv_n, cfg.backward)
+        Δh = convert_scores(T, as_array_cotangent(eltype(scores_n), Δ, scores_n))
+        dq, dP = packed_pullback(Δh, q, D, qmask, args, convert_scores(T, inv_n), cfg.backward)
         (NoTangent(), NoTangent(), dq, packed_tangent(D, dP), NoTangent())
     end
     scores_n, pullback
@@ -132,8 +135,8 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
     scores, args = varlen_forward(Q, D, cfg.neg)
     scores_n, inv_n = varlen_finalize(scores, Q, cfg.normalize)
     function pullback(Δ)
-        Δh = as_array_cotangent(T, Δ, scores_n)
-        dQ, dDtok = varlen_pullback(Δh, Q, D, args, inv_n, cfg.backward)
+        Δh = convert_scores(T, as_array_cotangent(eltype(scores_n), Δ, scores_n))
+        dQ, dDtok = varlen_pullback(Δh, Q, D, args, convert_scores(T, inv_n), cfg.backward)
         (NoTangent(), NoTangent(), packed_tangent(Q, dQ), packed_tangent(D, dDtok))
     end
     scores_n, pullback
@@ -145,9 +148,9 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
     score, _ = int8_pair_forward(q, d, qmask, dmask)
     y = pair_finalize(score, qmask, cfg.normalize)[1]
-    function pullback(_)
-        throw(ArgumentError("INT8 MaxSim is forward-only (no ChainRules pullback)"))
-    end
+    pullback(::ChainRulesCore.AbstractZero) =
+        (NoTangent(), NoTangent(), ZeroTangent(), NoTangent(), NoTangent(), NoTangent())
+    pullback(_) = throw(ArgumentError("INT8 MaxSim is forward-only (no ChainRules pullback)"))
     y, pullback
 end
 
@@ -157,8 +160,8 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
                               dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     scores, _ = int8_paired_forward(Q, D, qmask, dmask)
     y = cfg.normalize ? length_normalize(scores, qmask) : scores
-    function pullback(_)
-        throw(ArgumentError("INT8 MaxSim is forward-only (no ChainRules pullback)"))
-    end
+    pullback(::ChainRulesCore.AbstractZero) =
+        (NoTangent(), NoTangent(), ZeroTangent(), NoTangent(), NoTangent(), NoTangent())
+    pullback(_) = throw(ArgumentError("INT8 MaxSim is forward-only (no ChainRules pullback)"))
     y, pullback
 end

@@ -29,7 +29,7 @@ function length_normalize_candidates(scores::AbstractMatrix{T},
                                      qmask::AbstractMatrix{Bool},
                                      idxs::AbstractMatrix{<:Integer},
                                      n_gallery::Integer,
-                                     neg::T) where {T}
+                                     neg) where {T}
     length_normalize_candidates(scores, inv_token_counts(qmask, T, true),
                                 idxs, n_gallery, neg)
 end
@@ -38,9 +38,9 @@ function length_normalize_candidates(scores::AbstractMatrix{T},
                                      inv_n::AbstractVector{T},
                                      idxs::AbstractMatrix{<:Integer},
                                      n_gallery::Integer,
-                                     neg::T) where {T}
+                                     neg) where {T}
     out = length_normalize(scores, inv_n)
     idx = indices_on(scores, idxs)
     valid = (idx .>= 1) .& (idx .<= n_gallery)
-    ifelse.(valid, out, neg)
+    ifelse.(valid, out, convert_scores(T, neg))
 end

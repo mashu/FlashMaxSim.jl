@@ -49,5 +49,10 @@ end
 # Default `MaxSim(...)` keeps Float32 for ergonomics; prefer `MaxSim(T; ...)` with features.
 MaxSim(; kwargs...) = MaxSim{Float32}(; kwargs...)
 
+function Base.show(io::IO, cfg::MaxSim{T}) where {T}
+    print(io, "MaxSim{$T}(neg=", cfg.neg, ", normalize=", cfg.normalize,
+          ", backward=", cfg.backward, ")")
+end
+
 """Marker: ``S[j,i] = MaxSim(Q[:,:,i], D[:,:,j])`` → `(Bd, Bq)`."""
 struct InBatch end

@@ -17,6 +17,10 @@ over tokens where `qmask[t]` and `dmask[u]` are true. Fuses the per-token
 argmax (paper Algorithm 1) without storing a dense `Tq × Td` similarity
 matrix (`Array` uses BLAS-tiled GEMM; other KA backends use a token kernel).
 
+Float16 features keep tokens in Float16 but **return Float32 scores**
+([`score_eltype`](@ref)`(Float16) === Float32`). The inner product, the
+per-token max, and the `Σ_t` reduction all run in FP32.
+
 # Keyword arguments
 
 - `neg`: fill value for **invalid candidate indices** in the candidate
@@ -41,11 +45,15 @@ function maxsim(cfg::MaxSim{T}, q::AbstractMatrix{T}, d::AbstractMatrix{T},
     pair_finalize(score, qmask, cfg.normalize)[1]
 end
 
-(cfg::MaxSim)(q::AbstractMatrix, d::AbstractMatrix) =
+(cfg::MaxSim{T})(q::AbstractMatrix{T}, d::AbstractMatrix{T}) where {T<:AbstractFloat} =
     maxsim(cfg, q, d, true_mask(q, size(q, 2)), true_mask(d, size(d, 2)))
-(cfg::MaxSim)(q::AbstractMatrix, d::AbstractMatrix,
-              qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool}) =
+(cfg::MaxSim{T})(q::AbstractMatrix{T}, d::AbstractMatrix{T},
+                 qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool}) where {T<:AbstractFloat} =
     maxsim(cfg, q, d, qmask, dmask)
+(cfg::MaxSim)(::AbstractMatrix, ::AbstractMatrix) =
+    throw(ArgumentError("MaxSim feature eltype must match the callable's parameter"))
+(cfg::MaxSim)(::AbstractMatrix, ::AbstractMatrix, ::AbstractVector{Bool}, ::AbstractVector{Bool}) =
+    throw(ArgumentError("MaxSim feature eltype must match the callable's parameter"))
 
 # ---- paired batch ---------------------------------------------------------
 
@@ -76,11 +84,11 @@ function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
     cfg.normalize ? length_normalize(scores, qmask) : scores
 end
 
-(cfg::MaxSim)(Q::AbstractArray{<:Any,3}, D::AbstractArray{<:Any,3}) =
+(cfg::MaxSim{T})(Q::AbstractArray{T,3}, D::AbstractArray{T,3}) where {T<:AbstractFloat} =
     maxsim(cfg, Q, D, true_mask(Q, size(Q, 2), size(Q, 3)),
            true_mask(D, size(D, 2), size(D, 3)))
-(cfg::MaxSim)(Q::AbstractArray{<:Any,3}, D::AbstractArray{<:Any,3},
-              qmask::AbstractMatrix{Bool}, dmask::AbstractMatrix{Bool}) =
+(cfg::MaxSim{T})(Q::AbstractArray{T,3}, D::AbstractArray{T,3},
+                 qmask::AbstractMatrix{Bool}, dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat} =
     maxsim(cfg, Q, D, qmask, dmask)
 
 # ---- in-batch -------------------------------------------------------------

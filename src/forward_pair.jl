@@ -20,11 +20,27 @@ function require_pair_shapes(q, d, qmask, dmask)
     dim, Tq, Td
 end
 
-"""Allocate host scratch for tiled pair GEMM (`DOC_TILE × Tq`, clipped to `Td`)."""
+"""Allocate host scratch for tiled pair GEMM (`DOC_TILE × Tq`, clipped to `Td`).
+
+Scratch uses [`dot_accum`](@ref)`(T)` so Float16 host GEMM runs in FP32 BLAS."""
 function pair_host_scratch(::Type{T}, Tq::Int, Td::Int) where {T}
+    A = dot_accum(T)
     tile = min(DOC_TILE, max(Td, 1))
-    Matrix{T}(undef, tile, Tq), zeros(T, Tq), zeros(Int32, Tq)
+    Matrix{A}(undef, tile, Tq), zeros(A, Tq), zeros(Int32, Tq)
 end
+
+"""Keep views when features already match the GEMM eltype."""
+host_gemm_query(q::AbstractMatrix{A}, ::Type{A}) where {A} = q
+host_gemm_query(q::AbstractMatrix, ::Type{A}) where {A} = convert(Matrix{A}, q)
+
+host_gemm_doc_tile(d::AbstractMatrix{A}, u::Int, u_end::Int, ::Type{A}) where {A} =
+    view(d, :, u:u_end)
+host_gemm_doc_tile(d::AbstractMatrix, u::Int, u_end::Int, ::Type{A}) where {A} =
+    convert(Matrix{A}, view(d, :, u:u_end))
+
+host_gemm_batch(Q::AbstractArray{A,3}, ::Type{A}) where {A} = Q
+host_gemm_batch(Q::AbstractArray, ::Type{A}) where {A} =
+    convert(typeof(similar(Q, A)), Q)
 
 function pair_forward_host(q::AbstractMatrix{T}, d::AbstractMatrix{T},
                            qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
@@ -34,23 +50,30 @@ function pair_forward_host(q::AbstractMatrix{T}, d::AbstractMatrix{T},
     pair_forward_host!(argmax_u, mx, Stile, q, d, qmask, dmask, neg)
 end
 
-"""In-place host pair forward using caller-owned `Stile`, `mx`, `argmax_u` scratch."""
-function pair_forward_host!(argmax_u::AbstractVector{Int32}, mx::AbstractVector{T},
-                            Stile::AbstractMatrix{T},
+"""In-place host pair forward using caller-owned `Stile`, `mx`, `argmax_u` scratch.
+
+The last `::T` argument is the ignored `neg` candidate-index sentinel.
+`Stile` / `mx` are in [`dot_accum`](@ref)`(T)` (FP32 for Float16 features).
+The inner GEMM and the `Σ_t` reduction run in that accumulate type; the
+returned score stays in [`score_eltype`](@ref)`(T)` (Float32 for Float16 features)."""
+function pair_forward_host!(argmax_u::AbstractVector{Int32}, mx::AbstractVector{A},
+                            Stile::AbstractMatrix{A},
                             q::AbstractMatrix{T}, d::AbstractMatrix{T},
                             qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool},
-                            ::T) where {T<:AbstractFloat}
+                            ::T) where {T<:AbstractFloat, A<:AbstractFloat}
     _, Tq, Td = require_pair_shapes(q, d, qmask, dmask)
     length(argmax_u) == Tq || throw(DimensionMismatch("argmax_u"))
     length(mx) == Tq || throw(DimensionMismatch("mx"))
     size(Stile, 2) == Tq || throw(DimensionMismatch("Stile"))
     fill!(argmax_u, Int32(0))
-    fill!(mx, zero(T))
+    fill!(mx, zero(A))
+    qA = host_gemm_query(q, A)
     u = 1
     while u <= Td
         u_end = min(u + DOC_TILE - 1, Td)
         w = u_end - u + 1
-        mul!(view(Stile, 1:w, :), transpose(view(d, :, u:u_end)), q)
+        dA = host_gemm_doc_tile(d, u, u_end, A)
+        mul!(view(Stile, 1:w, :), transpose(dA), qA)
         @inbounds for t in 1:Tq
             qmask[t] || continue
             for uu in 1:w
@@ -64,7 +87,7 @@ function pair_forward_host!(argmax_u::AbstractVector{Int32}, mx::AbstractVector{
         end
         u = u_end + 1
     end
-    score = zero(T)
+    score = zero(A)
     @inbounds for t in 1:Tq
         qmask[t] && argmax_u[t] > 0 && (score += mx[t])
     end
@@ -83,18 +106,28 @@ function pair_forward_ka(backend::Backend, q::AbstractMatrix{T}, d::AbstractMatr
                          dmask::AbstractVector{Bool},
                          ::T) where {T<:AbstractFloat}
     _, Tq, _ = require_pair_shapes(q, d, qmask, dmask)
+    A = dot_accum(T)
     argmax_u = zeros_like(q, Int32, Tq)
-    partial = zeros_like(q, T, Tq)
+    partial = zeros_like(q, A, Tq)
     launch_pair_scan!(backend, argmax_u, partial, q, d, qmask, dmask)
     score = sum_length1(backend, partial)   # length-1, same backend — no host sum
     finish!(backend)
     score, argmax_u
 end
 
-launch_pair_scan!(backend::Backend, argmax_u, partial, q, d, qmask, dmask) =
-    launch!(pair_token_kernel!, backend, size(q, 2), argmax_u, partial, q, d, qmask, dmask)
+function launch_pair_scan!(backend::Backend, argmax_u, partial, q, d, qmask, dmask;
+                           force_tiles::Bool = false)
+    if force_tiles
+        launch_grouped!(pair_tile_kernel!, backend, query_tile_group(size(q, 2)),
+                        size(q, 2), argmax_u, partial, q, d, qmask, dmask)
+    else
+        launch!(pair_token_kernel!, backend, size(q, 2), argmax_u, partial, q, d, qmask, dmask)
+    end
+    nothing
+end
 
-launch_pair_scan!(backend::GPU, argmax_u, partial, q, d, qmask, dmask) =
+launch_pair_scan!(backend::GPU, argmax_u, partial, q, d, qmask, dmask;
+                  force_tiles::Bool = true) =
     launch_grouped!(pair_tile_kernel!, backend, query_tile_group(size(q, 2)),
                     size(q, 2), argmax_u, partial, q, d, qmask, dmask)
 

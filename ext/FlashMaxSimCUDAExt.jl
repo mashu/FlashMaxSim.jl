@@ -123,15 +123,16 @@ function FlashMaxSim.launch_candidates_scan!(backend::CUDABackend, args, partial
     nothing
 end
 
-function FlashMaxSim.inbatch_device_scan!(backend::CUDABackend, S::CuArray{Float16},
+function FlashMaxSim.inbatch_device_scan!(backend::CUDABackend, S,
                                           args, Q::CuArray{Float16,3}, D::CuArray{Float16,3},
                                           qmask, dmask)
     if FlashMaxSim.tensor_cores_active(backend, Float16)
         Tq, Bq, Bd = size(Q, 2), size(Q, 3), size(D, 3)
-        partial = similar(Q, Float16, Tq, Bd, Bq)
-        fill!(partial, zero(Float16))
+        A = FlashMaxSim.dot_accum(Float16)
+        partial = similar(Q, A, Tq, Bd, Bq)
+        fill!(partial, zero(A))
         launch_inbatch_wmma!(args, partial, Q, D, qmask, dmask)
-        S .= dropdims(sum(partial; dims = 1); dims = 1)
+        S .= eltype(S).(dropdims(sum(partial; dims = 1); dims = 1))
     else
         FlashMaxSim.inbatch_gemm_scan!(backend, S, args, Q, D, qmask, dmask)
     end
@@ -287,7 +288,7 @@ function pair_wmma_kernel!(argmax_out, partial, q, d, qmask, dmask)
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= Tq
-            @inbounds partial[tg] = arg == Int32(0) ? Float16(0) : Float16(mx)
+            @inbounds partial[tg] = arg == Int32(0) ? zero(eltype(partial)) : eltype(partial)(mx)
             @inbounds argmax_out[tg] = arg
         end
     end
@@ -350,7 +351,7 @@ function paired_wmma_kernel!(argmax_out, partial, Q, D, qmask, dmask)
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= Tq
-            @inbounds partial[tg, b] = arg == Int32(0) ? Float16(0) : Float16(mx)
+            @inbounds partial[tg, b] = arg == Int32(0) ? zero(eltype(partial)) : eltype(partial)(mx)
             @inbounds argmax_out[tg, b] = arg
         end
     end
@@ -413,7 +414,7 @@ function packed_wmma_kernel!(argmax_out, partial, q, packed, cu, qmask)
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= Tq
-            @inbounds partial[tg, b] = arg == Int32(0) ? Float16(0) : Float16(mx)
+            @inbounds partial[tg, b] = arg == Int32(0) ? zero(eltype(partial)) : eltype(partial)(mx)
             @inbounds argmax_out[tg, b] = arg
         end
     end
@@ -477,7 +478,7 @@ function varlen_wmma_kernel!(argmax_out, partial, Qp, Dp, cu_q, cu_d)
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= size(partial, 1)
-            @inbounds partial[tg, n] = (tg <= Tq && arg != Int32(0)) ? Float16(mx) : Float16(0)
+            @inbounds partial[tg, n] = (tg <= Tq && arg != Int32(0)) ? eltype(partial)(mx) : zero(eltype(partial))
             @inbounds argmax_out[tg, n] = tg <= Tq ? arg : Int32(0)
         end
     end
@@ -544,7 +545,7 @@ function candidates_wmma_kernel!(argmax_out, partial, Q, gallery, idx, qmask, dm
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= Tq
-            @inbounds partial[tg, c, b] = (!in_gal || arg == Int32(0)) ? Float16(0) : Float16(mx)
+            @inbounds partial[tg, c, b] = (!in_gal || arg == Int32(0)) ? zero(eltype(partial)) : eltype(partial)(mx)
             @inbounds argmax_out[tg, c, b] = arg
         end
     end
@@ -608,7 +609,7 @@ function inbatch_wmma_kernel!(argmax_out, partial, Q, D, qmask, dmask)
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= Tq
-            @inbounds partial[tg, j, i] = arg == Int32(0) ? Float16(0) : Float16(mx)
+            @inbounds partial[tg, j, i] = arg == Int32(0) ? zero(eltype(partial)) : eltype(partial)(mx)
             @inbounds argmax_out[tg, j, i] = arg
         end
     end
@@ -673,7 +674,7 @@ function int8_pair_wmma_kernel!(argmax_out, partial, qc, qs, dc, ds, qmask, dmas
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= Tq
-            @inbounds partial[tg] = arg == Int32(0) ? zero(T) : mx
+            @inbounds partial[tg] = arg == Int32(0) ? zero(eltype(partial)) : eltype(partial)(mx)
             @inbounds argmax_out[tg] = arg
         end
     end
@@ -737,7 +738,7 @@ function int8_paired_wmma_kernel!(argmax_out, partial, Qc, Qs, Dc, Ds, qmask, dm
     if lane <= WMMA_TILE
         tg = t0 + lane
         if tg <= Tq
-            @inbounds partial[tg, b] = arg == Int32(0) ? zero(T) : mx
+            @inbounds partial[tg, b] = arg == Int32(0) ? zero(eltype(partial)) : eltype(partial)(mx)
             @inbounds argmax_out[tg, b] = arg
         end
     end

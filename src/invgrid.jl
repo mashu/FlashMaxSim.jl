@@ -8,14 +8,17 @@ Build CSR `(row_ptr, col_idx)` inverting `argmax[source] → dest`.
 sums): destination `u` owns `col_idx[(row_ptr[u] + 1):row_ptr[u + 1]]`.
 
 Counting sort: one pass to count, prefix-sum `row_ptr`, one pass to scatter
-sources. Sources that share a destination stay in source order.
+sources. The host builder keeps sources that share a destination in source
+order. Device CSR builders (`csr_fill_*`) obtain slots from `@atomic` and
+do **not** preserve source order — floating-point scatter sums may differ
+run-to-run on GPU.
 """
-function build_inverse_csr(argmax::AbstractVector{<:Integer}, n_dest::Integer)
-    n_src = length(argmax)
+function build_inverse_csr(arg_u::AbstractVector{<:Integer}, n_dest::Integer)
+    n_src = length(arg_u)
     nd = Int(n_dest)
     row_ptr = zeros(Int32, nd + 1)
     @inbounds for s in 1:n_src
-        u = Int(argmax[s])
+        u = Int(arg_u[s])
         (1 <= u <= nd) || continue
         row_ptr[u + 1] += Int32(1)
     end
@@ -26,7 +29,7 @@ function build_inverse_csr(argmax::AbstractVector{<:Integer}, n_dest::Integer)
     col_idx = Vector{Int32}(undef, nnz)
     cursor = copy(row_ptr)
     @inbounds for s in 1:n_src
-        u = Int(argmax[s])
+        u = Int(arg_u[s])
         (1 <= u <= nd) || continue
         cursor[u] += Int32(1)
         col_idx[Int(cursor[u])] = Int32(s)

@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 jobs:
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - t${{ matrix.threads }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -21,8 +21,10 @@ jobs:
       matrix:
         version: ['1.10', '1']
         os: [ubuntu-latest]
+        threads: ['1', '4']
     env:
       FLASHMAXSIM_CUDA: '0'
+      JULIA_NUM_THREADS: ${{ matrix.threads }}
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2

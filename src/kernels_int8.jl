@@ -9,25 +9,27 @@
     Td = size(dc, 2)
     Tq = size(qc, 2)
     T = eltype(qs)
+    AT = dot_accum(T)
+    PT = eltype(partial)
     if t <= Tq
-        mx = zero(T)
+        mx = zero(AT)
         arg = Int32(0)
         if @inbounds qmask[t]
-            qt = T(qs[t])
+            qt = convert(AT, qs[t])
             @inbounds for u in 1:Td
                 dmask[u] || continue
                 acc = Int32(0)
                 for k in 1:dim
                     acc += Int32(qc[k, t]) * Int32(dc[k, u])
                 end
-                s = qt * T(ds[u]) * T(acc)
+                s = qt * convert(AT, ds[u]) * convert(AT, acc)
                 if arg == Int32(0) || s > mx
                     mx = s
                     arg = Int32(u)
                 end
             end
         end
-        @inbounds partial[t] = arg == Int32(0) ? zero(T) : mx
+        @inbounds partial[t] = arg == Int32(0) ? zero(PT) : PT(mx)
         @inbounds argmax_out[t] = arg
     end
 end
@@ -41,6 +43,8 @@ end
     gs = @uniform prod(@groupsize())
     t = (gid - 1) * gs + lid
     T = eltype(qs)
+    AT = dot_accum(T)
+    PT = eltype(partial)
     dim = @uniform size(qc, 1)
     Td = @uniform size(dc, 2)
     Tq = @uniform size(qc, 2)
@@ -48,10 +52,12 @@ end
     Qs = @localmem Int8 (TILE_K + 1, TILE_Q)
     Ds = @localmem Int8 (TILE_K + 1, TILE_D)
     acc = @private Int32 (TILE_D,)
-    mx = zero(T)
-    arg = Int32(0)
+    mx_s = @private AT (1,)
+    arg_s = @private Int32 (1,)
+    mx_s[1] = zero(AT)
+    arg_s[1] = Int32(0)
     ncell = TILE_K * TILE_D
-    qt = valid ? T(qs[t]) : zero(T)
+    qt = valid ? convert(AT, qs[t]) : zero(AT)
     @inbounds for u0 in 1:TILE_D:Td
         for uu in 1:TILE_D
             acc[uu] = Int32(0)
@@ -86,16 +92,17 @@ end
                 u = u0 + uu - 1
                 u > Td && continue
                 dmask[u] || continue
-                s = qt * T(ds[u]) * T(acc[uu])
-                if arg == Int32(0) || s > mx
-                    mx = s
-                    arg = Int32(u)
+                s = qt * convert(AT, ds[u]) * convert(AT, acc[uu])
+                if arg_s[1] == Int32(0) || s > mx_s[1]
+                    mx_s[1] = s
+                    arg_s[1] = Int32(u)
                 end
             end
         end
     end
     if t <= Tq
-        @inbounds partial[t] = arg == Int32(0) ? zero(T) : mx
+        arg = arg_s[1]
+        @inbounds partial[t] = arg == Int32(0) ? zero(PT) : PT(mx_s[1])
         @inbounds argmax_out[t] = arg
     end
 end
@@ -109,24 +116,26 @@ end
     Td = size(Dc, 2)
     Tq = size(Qc, 2)
     T = eltype(Qs)
-    mx = zero(T)
+    AT = dot_accum(T)
+    PT = eltype(partial)
+    mx = zero(AT)
     arg = Int32(0)
     if t <= Tq && @inbounds(qmask[t, b])
-        qt = T(Qs[t, b])
+        qt = convert(AT, Qs[t, b])
         @inbounds for u in 1:Td
             dmask[u, b] || continue
             acc = Int32(0)
             for k in 1:dim
                 acc += Int32(Qc[k, t, b]) * Int32(Dc[k, u, b])
             end
-            s = qt * T(Ds[u, b]) * T(acc)
+            s = qt * convert(AT, Ds[u, b]) * convert(AT, acc)
             if arg == Int32(0) || s > mx
                 mx = s
                 arg = Int32(u)
             end
         end
     end
-    @inbounds partial[t, b] = arg == Int32(0) ? zero(T) : mx
+    @inbounds partial[t, b] = arg == Int32(0) ? zero(PT) : PT(mx)
     @inbounds argmax_out[t, b] = arg
 end
 
@@ -141,6 +150,7 @@ end
     t = (gt - 1) * tgs + lt
     b = (gb - 1) * bgs + lb
     T = eltype(qscales)
+    PT = eltype(partial)
     dim = @uniform size(Qc, 1)
     Td = @uniform size(Dc, 2)
     Tq = @uniform size(Qc, 2)
@@ -150,8 +160,10 @@ end
     Qs = @localmem Int8 (TILE_K + 1, TILE_Q)
     Ds = @localmem Int8 (TILE_K + 1, TILE_D)
     acc = @private Int32 (TILE_D,)
-    mx = zero(T)
-    arg = Int32(0)
+    mx_s = @private T (1,)
+    arg_s = @private Int32 (1,)
+    mx_s[1] = zero(T)
+    arg_s[1] = Int32(0)
     ncell = TILE_K * TILE_D
     gs = @uniform prod(@groupsize())
     lid = @index(Local, Linear)
@@ -191,15 +203,16 @@ end
                 u > Td && continue
                 dmask[u, b] || continue
                 s = qt * T(dscales[u, b]) * T(acc[uu])
-                if arg == Int32(0) || s > mx
-                    mx = s
-                    arg = Int32(u)
+                if arg_s[1] == Int32(0) || s > mx_s[1]
+                    mx_s[1] = s
+                    arg_s[1] = Int32(u)
                 end
             end
         end
     end
     if live && t <= Tq
-        @inbounds partial[t, b] = arg == Int32(0) ? zero(T) : mx
+        arg = arg_s[1]
+        @inbounds partial[t, b] = arg == Int32(0) ? zero(PT) : PT(mx_s[1])
         @inbounds argmax_out[t, b] = arg
     end
 end

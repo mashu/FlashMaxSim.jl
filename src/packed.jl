@@ -20,6 +20,12 @@ struct PackedSeq{A <: AbstractMatrix, C <: AbstractVector{<:Integer}}
     end
 end
 
+function Base.show(io::IO, p::PackedSeq)
+    print(io, "PackedSeq{", eltype(p.tokens), "}(dim=", size(p.tokens, 1),
+          ", tokens=", size(p.tokens, 2), ", nseq=", nseq(p),
+          ", max_len=", p.max_len, ")")
+end
+
 nseq(p::PackedSeq) = length(p.cu) - 1
 
 function packed_max_len(cu::Vector{<:Integer})
@@ -55,6 +61,10 @@ end
 
 Wrap an existing packed matrix and 1-based CSR. `max_len` is computed once.
 Prefer [`pack_docs`](@ref) / [`pack_pairs`](@ref) when concatenating sequences.
+
+Host `Vector` `cu` is validated (starts at 1, covers `tokens`, nondecreasing).
+A device `cu` is **not** checked — every downstream kernel assumes a well-formed
+CSR. Build on the host and `adapt`, or use `pack_docs`.
 """
 PackedSeq(tokens::AbstractMatrix, cu::AbstractVector{<:Integer}) =
     PackedSeq(tokens, cu, packed_max_len(cu))
@@ -125,18 +135,31 @@ function packed_tangent(p::PackedSeq, dtokens)
     Tangent{typeof(p)}(; tokens = dtokens, cu = NoTangent(), max_len = NoTangent())
 end
 
+function require_packed_shapes(q::AbstractMatrix, P::PackedSeq,
+                               qmask::AbstractVector{Bool})
+    Tq = size(q, 2)
+    size(P.tokens, 1) == size(q, 1) || throw(DimensionMismatch("feature dim"))
+    length(qmask) == Tq || throw(DimensionMismatch("qmask"))
+    Tq, nseq(P)
+end
+
+function require_varlen_shapes(Q::PackedSeq, D::PackedSeq)
+    N = nseq(Q)
+    N == nseq(D) || throw(DimensionMismatch("varlen pair count"))
+    size(Q.tokens, 1) == size(D.tokens, 1) || throw(DimensionMismatch("feature dim"))
+    N, Q.max_len
+end
+
 function packed_forward_host(q::AbstractMatrix{T}, P::PackedSeq,
                              qmask::AbstractVector{Bool},
                              ::T) where {T<:AbstractFloat}
     packed = P.tokens
     cu = P.cu
-    Tq = size(q, 2)
-    B = nseq(P)
-    scores = zeros(T, max(B, 0))
+    Tq, B = require_packed_shapes(q, P, qmask)
+    A = score_eltype(T)
+    scores = zeros(A, max(B, 0))
     args = zeros(Int32, Tq, max(B, 0))
     B == 0 && return scores, args
-    size(packed, 1) == size(q, 1) || throw(DimensionMismatch("feature dim"))
-    length(qmask) == Tq || throw(DimensionMismatch("qmask"))
     max_td = P.max_len
     Stile, mx, argmax_u = pair_host_scratch(T, Tq, max_td)
     dmask = trues(max(max_td, 0))
@@ -155,11 +178,11 @@ end
 function packed_forward_ka(backend::Backend, q::AbstractMatrix{T}, P::PackedSeq,
                            qmask::AbstractVector{Bool},
                            ::T) where {T<:AbstractFloat}
-    Tq = size(q, 2)
-    B = nseq(P)
+    Tq, B = require_packed_shapes(q, P, qmask)
+    A = dot_accum(T)
     args = zeros_like(q, Int32, Tq, B)
-    partial = zeros_like(q, T, Tq, B)
-    launch!(packed_token_kernel!, backend, (Tq, B), args, partial, q, P.tokens, P.cu, qmask)
+    partial = zeros_like(q, A, Tq, B)
+    launch_packed_scan!(backend, args, partial, q, P.tokens, P.cu, qmask)
     scores = vec(sum(partial; dims = 1))
     finish!(backend)
     scores, args
@@ -168,10 +191,10 @@ end
 function packed_forward_ka(backend::GPU, q::AbstractMatrix{T}, P::PackedSeq,
                            qmask::AbstractVector{Bool},
                            ::T) where {T<:AbstractFloat}
-    Tq = size(q, 2)
-    B = nseq(P)
+    Tq, B = require_packed_shapes(q, P, qmask)
+    A = dot_accum(T)
     args = zeros_like(q, Int32, Tq, B)
-    partial = zeros_like(q, T, Tq, B)
+    partial = zeros_like(q, A, Tq, B)
     launch_packed_scan!(backend, args, partial, q, P.tokens, P.cu, qmask)
     scores = vec(sum(partial; dims = 1))
     finish!(backend)
@@ -193,19 +216,30 @@ packed_forward(::Backend, q::AbstractMatrix{T}, P::PackedSeq,
                qmask::AbstractVector{Bool}, neg::T) where {T<:AbstractFloat} =
     packed_forward_ka(array_backend(q), q, P, qmask, neg)
 
-launch_packed_scan!(backend::GPU, args, partial, q, packed, cu, qmask) =
+function launch_packed_scan!(backend::Backend, args, partial, q, packed, cu, qmask;
+                             force_tiles::Bool = false)
+    nd = (size(q, 2), length(cu) - 1)
+    if force_tiles
+        launch_grouped!(packed_tile_kernel!, backend, query_tile_group(nd), nd,
+                        args, partial, q, packed, cu, qmask)
+    else
+        launch!(packed_token_kernel!, backend, nd, args, partial, q, packed, cu, qmask)
+    end
+    nothing
+end
+
+launch_packed_scan!(backend::GPU, args, partial, q, packed, cu, qmask;
+                    force_tiles::Bool = true) =
     launch_grouped!(packed_tile_kernel!, backend, query_tile_group((size(q, 2), length(cu) - 1)),
                     (size(q, 2), length(cu) - 1), args, partial, q, packed, cu, qmask)
 
 function varlen_forward_host(Q::PackedSeq, D::PackedSeq, ::T) where {T<:AbstractFloat}
-    N = nseq(Q)
-    N == nseq(D) || throw(DimensionMismatch("varlen pair count"))
-    max_q = Q.max_len
-    scores = zeros(T, max(N, 0))
+    N, max_q = require_varlen_shapes(Q, D)
+    A = score_eltype(T)
+    scores = zeros(A, max(N, 0))
     args = zeros(Int32, max_q, max(N, 0))
     N == 0 && return scores, args
     Qp, Dp, cu_q, cu_d = Q.tokens, D.tokens, Q.cu, D.cu
-    size(Qp, 1) == size(Dp, 1) || throw(DimensionMismatch("feature dim"))
     max_d = D.max_len
     Stile, mx, argmax_u = pair_host_scratch(T, max_q, max_d)
     qmask_buf = trues(max(max_q, 0))
@@ -220,19 +254,18 @@ function varlen_forward_host(Q::PackedSeq, D::PackedSeq, ::T) where {T<:Abstract
                                    view(Qp, :, qa:qz), view(Dp, :, da:dz),
                                    view(qmask_buf, 1:Tq), view(dmask_buf, 1:Td), zero(T))
         scores[n] = s
-        args[1:Tq, n] .= au[1:Tq]
+        args[1:Tq, n] .= au
     end
     scores, args
 end
 
 function varlen_forward_ka(backend::Backend, Q::PackedSeq, D::PackedSeq,
                            ::T) where {T<:AbstractFloat}
-    N = nseq(Q)
-    max_q = Q.max_len
+    N, max_q = require_varlen_shapes(Q, D)
+    A = dot_accum(T)
     args = zeros_like(Q.tokens, Int32, max_q, N)
-    partial = zeros_like(Q.tokens, T, max_q, N)
-    launch!(varlen_token_kernel!, backend, (max_q, N), args, partial,
-            Q.tokens, D.tokens, Q.cu, D.cu)
+    partial = zeros_like(Q.tokens, A, max_q, N)
+    launch_varlen_scan!(backend, args, partial, Q.tokens, D.tokens, Q.cu, D.cu)
     scores = vec(sum(partial; dims = 1))
     finish!(backend)
     scores, args
@@ -240,10 +273,10 @@ end
 
 function varlen_forward_ka(backend::GPU, Q::PackedSeq, D::PackedSeq,
                            ::T) where {T<:AbstractFloat}
-    N = nseq(Q)
-    max_q = Q.max_len
+    N, max_q = require_varlen_shapes(Q, D)
+    A = dot_accum(T)
     args = zeros_like(Q.tokens, Int32, max_q, N)
-    partial = zeros_like(Q.tokens, T, max_q, N)
+    partial = zeros_like(Q.tokens, A, max_q, N)
     launch_varlen_scan!(backend, args, partial, Q.tokens, D.tokens, Q.cu, D.cu)
     scores = vec(sum(partial; dims = 1))
     finish!(backend)
@@ -262,7 +295,20 @@ varlen_forward(::CPU, Q::PackedSeq, D::PackedSeq, neg::T) where {T<:AbstractFloa
 varlen_forward(::Backend, Q::PackedSeq, D::PackedSeq, neg::T) where {T<:AbstractFloat} =
     varlen_forward_ka(array_backend(Q.tokens), Q, D, neg)
 
-launch_varlen_scan!(backend::GPU, args, partial, Qp, Dp, cu_q, cu_d) =
+function launch_varlen_scan!(backend::Backend, args, partial, Qp, Dp, cu_q, cu_d;
+                             force_tiles::Bool = false)
+    nd = (size(args, 1), size(args, 2))
+    if force_tiles
+        launch_grouped!(varlen_tile_kernel!, backend, query_tile_group(nd), nd,
+                        args, partial, Qp, Dp, cu_q, cu_d)
+    else
+        launch!(varlen_token_kernel!, backend, nd, args, partial, Qp, Dp, cu_q, cu_d)
+    end
+    nothing
+end
+
+launch_varlen_scan!(backend::GPU, args, partial, Qp, Dp, cu_q, cu_d;
+                    force_tiles::Bool = true) =
     launch_grouped!(varlen_tile_kernel!, backend,
                     query_tile_group((size(args, 1), size(args, 2))),
                     (size(args, 1), size(args, 2)), args, partial, Qp, Dp, cu_q, cu_d)

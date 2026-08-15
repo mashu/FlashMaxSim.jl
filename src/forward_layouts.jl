@@ -88,7 +88,8 @@ function paired_forward(::CPU, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                         dmask::AbstractMatrix{Bool},
                         neg::T) where {T<:AbstractFloat}
     _, Tq, Td, B = require_paired_shapes(Q, D, qmask, dmask)
-    scores = zeros(T, B)
+    A = score_eltype(T)
+    scores = zeros(A, B)
     args = zeros(Int32, Tq, B)
     Stile, mx, argmax_u = pair_host_scratch(T, Tq, Td)
     @inbounds for b in 1:B
@@ -113,19 +114,29 @@ function paired_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3}
                            dmask::AbstractMatrix{Bool},
                            ::T) where {T<:AbstractFloat}
     _, Tq, _, B = require_paired_shapes(Q, D, qmask, dmask)
+    A = dot_accum(T)
     args = zeros_like(Q, Int32, Tq, B)
-    partial = zeros_like(Q, T, Tq, B)
+    partial = zeros_like(Q, A, Tq, B)
     launch_paired_scan!(backend, args, partial, Q, D, qmask, dmask)
     scores = vec(sum(partial; dims = 1))   # stays on-device for CuArray
     finish!(backend)
     scores, args
 end
 
-launch_paired_scan!(backend::Backend, args, partial, Q, D, qmask, dmask) =
-    launch!(paired_token_kernel!, backend, (size(Q, 2), size(Q, 3)),
-            args, partial, Q, D, qmask, dmask)
+function launch_paired_scan!(backend::Backend, args, partial, Q, D, qmask, dmask;
+                             force_tiles::Bool = false)
+    nd = (size(Q, 2), size(Q, 3))
+    if force_tiles
+        launch_grouped!(paired_tile_kernel!, backend, query_tile_group(nd), nd,
+                        args, partial, Q, D, qmask, dmask)
+    else
+        launch!(paired_token_kernel!, backend, nd, args, partial, Q, D, qmask, dmask)
+    end
+    nothing
+end
 
-function launch_paired_scan!(backend::GPU, args, partial, Q, D, qmask, dmask)
+function launch_paired_scan!(backend::GPU, args, partial, Q, D, qmask, dmask;
+                             force_tiles::Bool = true)
     nd = (size(Q, 2), size(Q, 3))
     launch_grouped!(paired_tile_kernel!, backend, query_tile_group(nd), nd,
                     args, partial, Q, D, qmask, dmask)
@@ -146,17 +157,20 @@ function inbatch_forward(::CPU, Q::AbstractArray{T,3}, D::AbstractArray{T,3},
                          dmask::AbstractMatrix{Bool},
                          ::T) where {T<:AbstractFloat}
     dim, Tq, Bq, Td, Bd = require_inbatch_shapes(Q, D, qmask, dmask)
-    S = zeros(T, Bd, Bq)
+    A = score_eltype(T)
+    S = zeros(A, Bd, Bq)
     args = zeros(Int32, Tq, Bd, Bq)
     (Bd == 0 || Bq == 0 || Tq == 0 || Td == 0) && return S, args
-    Qmat = reshape(Q, dim, Tq * Bq)
-    chunk = inbatch_doc_chunk(T, Td, Tq, Bq, Bd)
+    QA = host_gemm_batch(Q, A)
+    DA = host_gemm_batch(D, A)
+    Qmat = reshape(QA, dim, Tq * Bq)
+    chunk = inbatch_doc_chunk(A, Td, Tq, Bq, Bd)
     for j0 in 1:chunk:Bd
         j1 = min(j0 + chunk - 1, Bd)
         C = j1 - j0 + 1
-        Dc = D[:, :, j0:j1]
-        A = reshape(Dc, dim, Td * C)
-        M = A' * Qmat
+        Dc = DA[:, :, j0:j1]
+        G = reshape(Dc, dim, Td * C)
+        M = G' * Qmat
         M4 = reshape(M, Td, C, Tq, Bq)
         dm = dmask[:, j0:j1]
         inbatch_accumulate_host!(S, args, M4, qmask, dm, j0)
@@ -176,7 +190,8 @@ function inbatch_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3
                             dmask::AbstractMatrix{Bool},
                             ::T) where {T<:AbstractFloat}
     dim, Tq, Bq, Td, Bd = require_inbatch_shapes(Q, D, qmask, dmask)
-    S = zeros_like(Q, T, Bd, Bq)
+    A = score_eltype(T)
+    S = zeros_like(Q, A, Bd, Bq)
     args = zeros_like(Q, Int32, Tq, Bd, Bq)
     (Bd == 0 || Bq == 0 || Tq == 0 || Td == 0) && return S, args
     inbatch_device_scan!(backend, S, args, Q, D, qmask, dmask)
@@ -188,16 +203,19 @@ inbatch_device_scan!(backend, S, args, Q, D, qmask, dmask) =
     inbatch_gemm_scan!(backend, S, args, Q, D, qmask, dmask)
 
 function inbatch_gemm_scan!(backend, S, args, Q::AbstractArray{T,3}, D, qmask, dmask) where {T}
+    A = eltype(S)
+    QA = host_gemm_batch(Q, A)
+    DA = host_gemm_batch(D, A)
     Tq, Bq = size(Q, 2), size(Q, 3)
     Td, Bd = size(D, 2), size(D, 3)
-    Qmat = reshape(Q, size(Q, 1), Tq * Bq)
-    chunk = inbatch_doc_chunk(T, Td, Tq, Bq, Bd)
+    Qmat = reshape(QA, size(Q, 1), Tq * Bq)
+    chunk = inbatch_doc_chunk(A, Td, Tq, Bq, Bd)
     for j0 in 1:chunk:Bd
         j1 = min(j0 + chunk - 1, Bd)
         C = j1 - j0 + 1
-        Dc = D[:, :, j0:j1]
-        A = reshape(Dc, size(Q, 1), Td * C)
-        M = A' * Qmat
+        Dc = DA[:, :, j0:j1]
+        G = reshape(Dc, size(Q, 1), Td * C)
+        M = G' * Qmat
         M4 = reshape(M, Td, C, Tq, Bq)
         dm = dmask[:, j0:j1]
         launch!(inbatch_accumulate_kernel!, backend, (Tq, C, Bq),
@@ -226,7 +244,8 @@ function candidates_forward(::CPU, Q::AbstractArray{T,3},
                             neg::T) where {T<:AbstractFloat}
     _, Tq, B, Td, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
     C = size(idxs, 1)
-    S = fill(neg, C, B)
+    A = score_eltype(T)
+    S = fill(convert_scores(A, neg), C, B)
     args = zeros(Int32, Tq, C, B)
     Stile, mx, argmax_u = pair_host_scratch(T, Tq, Td)
     @inbounds for b in 1:B, c in 1:C
@@ -259,21 +278,32 @@ function candidates_forward_ka(backend, Q::AbstractArray{T,3},
     _, Tq, B, _, N = require_candidates_shapes(Q, gallery, idxs, qmask, dmask)
     idx = indices_on(Q, idxs)
     C = size(idx, 1)
+    A = dot_accum(T)
     args = zeros_like(Q, Int32, Tq, C, B)
-    partial = zeros_like(Q, T, Tq, C, B)
+    partial = zeros_like(Q, A, Tq, C, B)
     launch_candidates_scan!(backend, args, partial, Q, gallery, idx, qmask, dmask, N)
-    S = dropdims(sum(partial; dims = 1); dims = 1)   # on-device
+    S = dropdims(sum(partial; dims = 1); dims = 1)   # on-device, accumulate type
     valid = (idx .>= 1) .& (idx .<= N)
-    out = ifelse.(valid, S, neg)
+    out = ifelse.(valid, S, convert_scores(eltype(S), neg))
     finish!(backend)
     out, args
 end
 
-launch_candidates_scan!(backend::Backend, args, partial, Q, gallery, idx, qmask, dmask, N) =
-    launch!(candidates_token_kernel!, backend, (size(Q, 2), size(idx, 1), size(Q, 3)),
-            args, partial, Q, gallery, idx, qmask, dmask, N)
+function launch_candidates_scan!(backend::Backend, args, partial, Q, gallery, idx, qmask, dmask, N;
+                                 force_tiles::Bool = false)
+    nd = (size(Q, 2), size(idx, 1), size(Q, 3))
+    if force_tiles
+        launch_grouped!(candidates_tile_kernel!, backend, query_tile_group(nd), nd,
+                        args, partial, Q, gallery, idx, qmask, dmask, N)
+    else
+        launch!(candidates_token_kernel!, backend, nd,
+                args, partial, Q, gallery, idx, qmask, dmask, N)
+    end
+    nothing
+end
 
-function launch_candidates_scan!(backend::GPU, args, partial, Q, gallery, idx, qmask, dmask, N)
+function launch_candidates_scan!(backend::GPU, args, partial, Q, gallery, idx, qmask, dmask, N;
+                                 force_tiles::Bool = true)
     nd = (size(Q, 2), size(idx, 1), size(Q, 3))
     launch_grouped!(candidates_tile_kernel!, backend, query_tile_group(nd), nd,
                     args, partial, Q, gallery, idx, qmask, dmask, N)

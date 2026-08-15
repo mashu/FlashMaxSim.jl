@@ -1,7 +1,9 @@
-# Runs every KernelAbstractions kernel on the CPU backend and checks it against
-# the host reference. Forward/backward KA paths are reached through named
-# `*_forward_ka` / `*_pullback_ka` entry points — backend dispatch alone always
-# selects the host methods for colocated CPU arrays (including views).
+# Runs KernelAbstractions scalar (token) kernels on the CPU backend and checks
+# them against the host reference. Forward/backward KA paths are reached through
+# named `*_forward_ka` / `*_pullback_ka` entry points — backend dispatch alone
+# always selects the host methods for colocated CPU arrays (including views).
+# SRAM tile kernels (`*_tile_kernel!`) are not launched here; they require
+# `launch_*_scan!(…; force_tiles=true)` and are covered in `test_edge_cases.jl`.
 
 @testset "KA CPU parity: all layouts" begin
     Random.seed!(2024)

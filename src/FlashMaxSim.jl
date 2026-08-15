@@ -4,8 +4,10 @@
 # a dense query×doc similarity matrix (paper Alg. 1). GPU scans tile Q/D in
 # SRAM with a split-d inner `TILE_K` loop (paper §F.9 — SRAM independent of
 # embedding dim). `CuArray{Float16}` uses WMMA tensor cores (pair, paired,
-# packed, varlen, candidates, in-batch) with FP32 WMMA accumulation. INT8
-# indices use deferred dequant and INT8 WMMA on sm ≥ 7.5 (forward-only).
+# packed, varlen, candidates, in-batch) with FP32 WMMA accumulation and
+# Float32 scores (`score_eltype(Float16) === Float32`) so ranking gaps below
+# a Float16 ulp are not rounded away. INT8 indices use deferred dequant and
+# INT8 WMMA on sm ≥ 7.5 (forward-only).
 # In-batch contrastive scoring tiles GEMM
 # chunks of `D'Q` on CPU / Float32 GPU; F16 CUDA fuses the same MaxSim scan.
 # Training backward saves only argmax indices and aggregates with fused
@@ -24,7 +26,7 @@ using LinearAlgebra
 import KernelAbstractions: @atomic
 
 export MaxSim, InBatch, BackwardStrategy, AtomicUnified, InvGrid
-export maxsim, maxsim_dense
+export maxsim, maxsim_dense, score_eltype
 export pack_docs, pack_pairs, PackedSeq, nseq, Int8Index, quantize_int8_symmetric
 
 include("types.jl")

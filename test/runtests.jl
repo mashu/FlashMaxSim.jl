@@ -39,6 +39,7 @@ end
     include("test_ka_cpu.jl")
     include("test_packed.jl")
     include("test_int8.jl")
+    include("test_edge_cases.jl")
     if run_cuda
         include("test_cuda.jl")
     end
