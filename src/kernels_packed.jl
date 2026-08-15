@@ -41,8 +41,7 @@ end
     bgs = @uniform @groupsize()[2]
     t = (gt - 1) * tgs + lt
     b = (gb - 1) * bgs + lb
-    T = eltype(q)
-    AT = dot_accum(T)
+    AT = dot_accum(eltype(q))
     PT = eltype(partial)
     dim = @uniform size(q, 1)
     Tq = @uniform size(q, 2)
@@ -55,10 +54,10 @@ end
         Td = Int(cu[b + 1]) - a
     end
     valid = live && t <= Tq && @inbounds(qmask[t]) && Td > 0
-    Qs = @localmem T (TILE_K + 1, TILE_Q)
-    Ds = @localmem T (TILE_K + 1, TILE_D)
-    acc = @private AT (TILE_D,)
-    mx_s = @private AT (1,)
+    Qs = @localmem eltype(q) (TILE_K + 1, TILE_Q)
+    Ds = @localmem eltype(q) (TILE_K + 1, TILE_D)
+    acc = @private dot_accum(eltype(q)) (TILE_D,)
+    mx_s = @private dot_accum(eltype(q)) (1,)
     arg_s = @private Int32 (1,)
     mx_s[1] = zero(AT)
     arg_s[1] = Int32(0)
@@ -78,12 +77,12 @@ end
                     k = k0 + kk - 1
                     u = u0 + uu - 1
                     Ds[kk, uu] = (live && k <= dim && u <= Td) ?
-                                 packed[k, a + u - 1] : zero(T)
+                                 packed[k, a + u - 1] : zero(eltype(q))
                 end
             end
             for kk in 1:TILE_K
                 k = k0 + kk - 1
-                Qs[kk, lt] = (valid && k <= dim) ? q[k, t] : zero(T)
+                Qs[kk, lt] = (valid && k <= dim) ? q[k, t] : zero(eltype(q))
             end
             @synchronize()
             for uu in 1:TILE_D
@@ -152,8 +151,7 @@ end
     ngs = @uniform @groupsize()[2]
     t = (gt - 1) * tgs + lt
     n = (gn - 1) * ngs + ln
-    T = eltype(Qp)
-    AT = dot_accum(T)
+    AT = dot_accum(eltype(Qp))
     PT = eltype(partial)
     dim = @uniform size(Qp, 1)
     N = @uniform (length(cu_q) - 1)
@@ -169,10 +167,10 @@ end
         Td = Int(cu_d[n + 1]) - da
     end
     valid = live && t <= Tq && Td > 0
-    Qs = @localmem T (TILE_K + 1, TILE_Q)
-    Ds = @localmem T (TILE_K + 1, TILE_D)
-    acc = @private AT (TILE_D,)
-    mx_s = @private AT (1,)
+    Qs = @localmem eltype(Qp) (TILE_K + 1, TILE_Q)
+    Ds = @localmem eltype(Qp) (TILE_K + 1, TILE_D)
+    acc = @private dot_accum(eltype(Qp)) (TILE_D,)
+    mx_s = @private dot_accum(eltype(Qp)) (1,)
     arg_s = @private Int32 (1,)
     mx_s[1] = zero(AT)
     arg_s[1] = Int32(0)
@@ -192,12 +190,12 @@ end
                     k = k0 + kk - 1
                     u = u0 + uu - 1
                     Ds[kk, uu] = (live && k <= dim && u <= Td) ?
-                                 Dp[k, da + u - 1] : zero(T)
+                                 Dp[k, da + u - 1] : zero(eltype(Qp))
                 end
             end
             for kk in 1:TILE_K
                 k = k0 + kk - 1
-                Qs[kk, lt] = (valid && k <= dim) ? Qp[k, qa + t - 1] : zero(T)
+                Qs[kk, lt] = (valid && k <= dim) ? Qp[k, qa + t - 1] : zero(eltype(Qp))
             end
             @synchronize()
             for uu in 1:TILE_D

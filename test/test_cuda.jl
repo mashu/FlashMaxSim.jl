@@ -151,24 +151,25 @@
     @test Array(maxsim(CuArray(Q), adapt(CuArray, D8))) ≈ maxsim(Q, D8) rtol=1e-5 atol=1e-5
     @test FlashMaxSim.tensor_cores_active(KernelAbstractions.get_backend(qg), Int8)
 
-    # Float16 WMMA vs host (tensor cores when sm ≥ 7.0)
+    # Float16 WMMA vs host — both return Float32 scores (FP32 accum)
     q16, d16 = Float16.(q), Float16.(d)
     s16_cpu = maxsim(q16, d16)
+    @test s16_cpu isa Float32
     q16g, d16g = CuArray(q16), CuArray(d16)
     s16_gpu = maxsim(q16g, d16g)
-    @test s16_gpu isa CuArray{Float16}
-    @test only(Array(s16_gpu)) ≈ s16_cpu rtol=5e-2 atol=5e-2
+    @test s16_gpu isa CuArray{Float32}
+    @test only(Array(s16_gpu)) ≈ s16_cpu rtol=1e-3 atol=1e-3
     @test FlashMaxSim.tensor_cores_active(KernelAbstractions.get_backend(q16g), Float16)
     Q16, D16 = Float16.(Q), Float16.(D)
-    @test Array(maxsim(CuArray(Q16), CuArray(D16))) ≈ maxsim(Q16, D16) rtol=5e-2 atol=5e-2
+    @test Array(maxsim(CuArray(Q16), CuArray(D16))) ≈ maxsim(Q16, D16) rtol=1e-3 atol=1e-3
     P16 = pack_docs([Float16.(doc) for doc in docs])
-    @test Array(maxsim(CuArray(q16), adapt(CuArray, P16))) ≈ maxsim(q16, P16) rtol=5e-2 atol=5e-2
+    @test Array(maxsim(CuArray(q16), adapt(CuArray, P16))) ≈ maxsim(q16, P16) rtol=1e-3 atol=1e-3
     Qp16, Dp16 = pack_pairs([Float16.(x) for x in qs], [Float16.(x) for x in ds])
-    @test Array(maxsim(adapt(CuArray, Qp16), adapt(CuArray, Dp16))) ≈ maxsim(Qp16, Dp16) rtol=5e-2 atol=5e-2
-    @test Array(maxsim(CuArray(Q16), CuArray(D16), InBatch())) ≈ maxsim(Q16, D16, InBatch()) rtol=5e-2 atol=5e-2
+    @test Array(maxsim(adapt(CuArray, Qp16), adapt(CuArray, Dp16))) ≈ maxsim(Qp16, Dp16) rtol=1e-3 atol=1e-3
+    @test Array(maxsim(CuArray(Q16), CuArray(D16), InBatch())) ≈ maxsim(Q16, D16, InBatch()) rtol=1e-3 atol=1e-3
     gallery16 = Float16.(gallery)
     @test Array(maxsim(CuArray(Q16), CuArray(gallery16), idxg)) ≈
-          maxsim(Q16, gallery16, idxs) rtol=5e-2 atol=5e-2
+          maxsim(Q16, gallery16, idxs) rtol=1e-3 atol=1e-3
 
     # split-d: embedding dim past the paper's SRAM-spill cliff (d>512)
     dimf, Tqf, Tdf = 768, 8, 17
@@ -181,7 +182,7 @@
     @test gqf isa CuArray
     @test cosine(Array(gqf), gradient(x -> maxsim(x, df), qf)[1]) ≥ 0.999
     qf16, df16 = Float16.(qf), Float16.(df)
-    @test only(Array(maxsim(CuArray(qf16), CuArray(df16)))) ≈ maxsim(qf16, df16) rtol=5e-2 atol=5e-2
+    @test only(Array(maxsim(CuArray(qf16), CuArray(df16)))) ≈ maxsim(qf16, df16) rtol=1e-3 atol=1e-3
     Pf = pack_docs([df, randn(T, dimf, 5)])
     @test Array(maxsim(qfg, adapt(CuArray, Pf))) ≈ maxsim(qf, Pf) rtol=1e-5 atol=1e-5
 end

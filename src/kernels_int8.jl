@@ -150,6 +150,7 @@ end
     t = (gt - 1) * tgs + lt
     b = (gb - 1) * bgs + lb
     T = eltype(qscales)
+    AT = dot_accum(T)
     PT = eltype(partial)
     dim = @uniform size(Qc, 1)
     Td = @uniform size(Dc, 2)
@@ -160,14 +161,14 @@ end
     Qs = @localmem Int8 (TILE_K + 1, TILE_Q)
     Ds = @localmem Int8 (TILE_K + 1, TILE_D)
     acc = @private Int32 (TILE_D,)
-    mx_s = @private T (1,)
+    mx_s = @private AT (1,)
     arg_s = @private Int32 (1,)
-    mx_s[1] = zero(T)
+    mx_s[1] = zero(AT)
     arg_s[1] = Int32(0)
     ncell = TILE_K * TILE_D
     gs = @uniform prod(@groupsize())
     lid = @index(Local, Linear)
-    qt = valid ? T(qscales[t, b]) : zero(T)
+    qt = valid ? convert(AT, qscales[t, b]) : zero(AT)
     @inbounds for u0 in 1:TILE_D:Td
         for uu in 1:TILE_D
             acc[uu] = Int32(0)
@@ -202,7 +203,7 @@ end
                 u = u0 + uu - 1
                 u > Td && continue
                 dmask[u, b] || continue
-                s = qt * T(dscales[u, b]) * T(acc[uu])
+                s = qt * convert(AT, dscales[u, b]) * convert(AT, acc[uu])
                 if arg_s[1] == Int32(0) || s > mx_s[1]
                     mx_s[1] = s
                     arg_s[1] = Int32(u)

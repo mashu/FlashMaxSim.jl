@@ -3,7 +3,8 @@
 # named `*_forward_ka` / `*_pullback_ka` entry points — backend dispatch alone
 # always selects the host methods for colocated CPU arrays (including views).
 # SRAM tile kernels (`*_tile_kernel!`) are not launched here; they require
-# `launch_*_scan!(…; force_tiles=true)` and are covered in `test_edge_cases.jl`.
+# `launch_*_scan!(…; force_tiles=true)`. CPU KA splits at `@synchronize`, so
+# that hook is GPU-oriented. Production CPU MaxSim uses the host GEMM path.
 
 @testset "KA CPU parity: all layouts" begin
     Random.seed!(2024)
