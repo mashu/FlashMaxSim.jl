@@ -118,22 +118,31 @@
 
     # packed cu_seqlens + INT8 on device
     docs = [randn(T, dim, 9), randn(T, dim, 0), randn(T, dim, 6)]
-    packed, cu = pack_docs(docs)
-    pg, cug = CuArray(packed), CuArray(cu)
+    P = pack_docs(docs)
+    Pg = adapt(CuArray, P)
     qg2 = CuArray(q)
-    s_pack = Array(maxsim(qg2, pg, cug))
-    @test s_pack ≈ maxsim(q, packed, cu) rtol=1e-5 atol=1e-5
+    s_pack = Array(maxsim(qg2, Pg))
+    @test s_pack ≈ maxsim(q, P) rtol=1e-5 atol=1e-5
     @test s_pack[2] == zero(T)
-    gq_p, gP_p = gradient((q, p) -> sum(maxsim(q, p, cug)), qg2, pg)
-    @test gq_p isa CuArray && gP_p isa CuArray
+    gq_p, gP_p = gradient((q, p) -> sum(maxsim(q, p)), qg2, Pg)
+    @test gq_p isa CuArray && gP_p.tokens isa CuArray
     cfg_inv = MaxSim{T}(T(-1.0f4), false, InvGrid())
-    @test_throws ArgumentError gradient((q, p) -> sum(maxsim(cfg_inv, q, p, cug,
-                                                            qmg)), qg2, pg)
+    @test_throws ArgumentError gradient((q, p) -> sum(maxsim(cfg_inv, q, p, qmg)), qg2, Pg)
+
+    qs = [q, randn(T, dim, 4)]
+    ds = [docs[1], docs[3]]
+    Qp, Dp = pack_pairs(qs, ds)
+    s_vl = Array(maxsim(adapt(CuArray, Qp), adapt(CuArray, Dp)))
+    @test s_vl ≈ maxsim(Qp, Dp) rtol=1e-5 atol=1e-5
+    gQv, gDv = gradient((Q, D) -> sum(maxsim(Q, D)), adapt(CuArray, Qp), adapt(CuArray, Dp))
+    @test gQv.tokens isa CuArray && gDv.tokens isa CuArray
 
     d_idx = quantize_int8_symmetric(d)
-    d_idx_g = Int8Index(CuArray(d_idx.codes), CuArray(d_idx.scales))
+    d_idx_g = adapt(CuArray, d_idx)
     s8g = maxsim(qg, d_idx_g, qmg, dmg)
     @test only(Array(s8g)) ≈ maxsim(q, d_idx, qm, dm) rtol=1e-5 atol=1e-5
+    D8 = quantize_int8_symmetric(D)
+    @test Array(maxsim(CuArray(Q), adapt(CuArray, D8))) ≈ maxsim(Q, D8) rtol=1e-5 atol=1e-5
 
     # Float16 WMMA vs host (tensor cores when sm ≥ 7.0)
     q16, d16 = Float16.(q), Float16.(d)

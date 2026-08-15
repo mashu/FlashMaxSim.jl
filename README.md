@@ -75,10 +75,14 @@ gallery = randn(Float32, 64, 48, 100)
 idxs = rand(1:100, 16, 8)
 Sc = cfg(Q, gallery, idxs)
 
-# packed documents (no padding): 1-based cu_seqlens
+# packed documents (no padding): 1-based cu_seqlens inside PackedSeq
 docs = [randn(Float32, 64, 40), randn(Float32, 64, 12), randn(Float32, 64, 55)]
-packed, cu = pack_docs(docs)
-s_pack = maxsim(q, packed, cu)          # (B,)
+P = pack_docs(docs)
+s_pack = maxsim(q, P)                   # (B,)
+Qs, Ds = pack_pairs([q], docs[1:1])     # varlen pairs
+s_pair = maxsim(Qs, Ds)
+# GPU: adapt/cu moves tokens + CSR together
+# Pg = adapt(CuArray, P)
 
 # INT8 index (quantize D once; Q quantized on the fly; forward-only)
 d8 = quantize_int8_symmetric(d)
@@ -105,7 +109,7 @@ s = maxsim(qg, dg)
 | §4.2 Eq. 2–3 sparse grads | ChainRules `rrule` on the feature backend |
 | Atomic-unified `∇D` | `backward = AtomicUnified()` — fused ∇Q+∇D, one D load, Q hoisted |
 | Inverse-grid `∇D` (Alg. 3) | `backward = InvGrid()` — CSR on every KA backend |
-| Packed `cu_seqlens` | `pack_docs` / `pack_pairs`; `maxsim(q, packed, cu)` |
+| Packed `cu_seqlens` | `PackedSeq` via `pack_docs` / `pack_pairs`; `maxsim(q, P)` |
 | INT8 deferred dequant | `quantize_int8_symmetric` / `Int8Index` (forward-only) |
 | In-batch / candidate scoring | `InBatch`, index-matrix layouts |
 
@@ -120,7 +124,7 @@ ColBERT training / reranking.
 | `maxsim` / `MaxSim` | One verb + callable config; layout via methods |
 | `BackwardStrategy` | `AtomicUnified` / `InvGrid` via dispatch |
 | KernelAbstractions | Forward + backward from the array backend |
-| `maxsim_dense` | Materializing host reference for correctness tests |
+| `PackedSeq` / `Int8Index` | Ragged CSR sequences; INT8 deferred-dequant index |
 
 Loss functions (InfoNCE, hard-negative mining) belong in the caller.
 

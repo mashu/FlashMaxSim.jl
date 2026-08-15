@@ -8,9 +8,13 @@ module FlashMaxSimCUDAExt
 
 using FlashMaxSim
 using CUDA
-using CUDA: CUDABackend, CuArray, CuStaticSharedArray, WMMA
+using CUDA: CUDABackend, CuArray, CuDynamicSharedArray, WMMA
 
 const WMMA_TILE = 16
+const WMMA_AS_BYTES = WMMA_TILE * WMMA_TILE * sizeof(Float16)
+const WMMA_BS_BYTES = WMMA_AS_BYTES
+const WMMA_CS_BYTES = WMMA_TILE * WMMA_TILE * sizeof(Float32)
+const WMMA_SMEM = WMMA_AS_BYTES + WMMA_BS_BYTES + WMMA_CS_BYTES
 
 function FlashMaxSim.tensor_cores_active(::CUDABackend, ::Type{Float16})
     CUDA.functional() && CUDA.capability(CUDA.device()) >= v"7.0"
@@ -46,7 +50,7 @@ end
 function launch_pair_wmma!(argmax_u, partial, q, d, qmask, dmask)
     Tq = size(q, 2)
     iszero(Tq) && return
-    @cuda threads = 32 blocks = cld(Tq, WMMA_TILE) pair_wmma_kernel!(
+    @cuda threads = 32 blocks = cld(Tq, WMMA_TILE) shmem = WMMA_SMEM pair_wmma_kernel!(
         argmax_u, partial, q, d, qmask, dmask)
     nothing
 end
@@ -54,7 +58,7 @@ end
 function launch_paired_wmma!(args, partial, Q, D, qmask, dmask)
     Tq, B = size(Q, 2), size(Q, 3)
     (iszero(Tq) || iszero(B)) && return
-    @cuda threads = 32 blocks = (cld(Tq, WMMA_TILE), B) paired_wmma_kernel!(
+    @cuda threads = 32 blocks = (cld(Tq, WMMA_TILE), B) shmem = WMMA_SMEM paired_wmma_kernel!(
         args, partial, Q, D, qmask, dmask)
     nothing
 end
@@ -63,9 +67,9 @@ function pair_wmma_kernel!(argmax_out, partial, q, d, qmask, dmask)
     conf = WMMA.Config{16, 16, 16, Float32}
     t0 = (Int(blockIdx().x) - 1) * WMMA_TILE
     tid = Int(threadIdx().x)
-    As = CuStaticSharedArray(Float16, (WMMA_TILE, WMMA_TILE))
-    Bs = CuStaticSharedArray(Float16, (WMMA_TILE, WMMA_TILE))
-    Cs = CuStaticSharedArray(Float32, (WMMA_TILE, WMMA_TILE))
+    As = CuDynamicSharedArray(Float16, (WMMA_TILE, WMMA_TILE), 0)
+    Bs = CuDynamicSharedArray(Float16, (WMMA_TILE, WMMA_TILE), WMMA_AS_BYTES)
+    Cs = CuDynamicSharedArray(Float32, (WMMA_TILE, WMMA_TILE), WMMA_AS_BYTES + WMMA_BS_BYTES)
     dim = size(q, 1)
     Tq = size(q, 2)
     Td = size(d, 2)
@@ -128,16 +132,14 @@ function paired_wmma_kernel!(argmax_out, partial, Q, D, qmask, dmask)
     t0 = (Int(blockIdx().x) - 1) * WMMA_TILE
     b = Int(blockIdx().y)
     tid = Int(threadIdx().x)
-    As = CuStaticSharedArray(Float16, (WMMA_TILE, WMMA_TILE))
-    Bs = CuStaticSharedArray(Float16, (WMMA_TILE, WMMA_TILE))
-    Cs = CuStaticSharedArray(Float32, (WMMA_TILE, WMMA_TILE))
+    As = CuDynamicSharedArray(Float16, (WMMA_TILE, WMMA_TILE), 0)
+    Bs = CuDynamicSharedArray(Float16, (WMMA_TILE, WMMA_TILE), WMMA_AS_BYTES)
+    Cs = CuDynamicSharedArray(Float32, (WMMA_TILE, WMMA_TILE), WMMA_AS_BYTES + WMMA_BS_BYTES)
     dim = size(Q, 1)
     Tq = size(Q, 2)
     Td = size(D, 2)
-    B = size(Q, 3)
     mx = 0.0f0
     arg = Int32(0)
-    live = b <= B
     @inbounds for u0 in 0:WMMA_TILE:(Td - 1)
         c_frag = WMMA.fill_c(0.0f0, conf)
         for k0 in 0:WMMA_TILE:(dim - 1)
@@ -146,14 +148,14 @@ function paired_wmma_kernel!(argmax_out, partial, Q, D, qmask, dmask)
                 kloc = ((e - 1) ÷ WMMA_TILE) + 1
                 tg = t0 + tloc
                 kg = k0 + kloc
-                As[tloc, kloc] = (live && tg <= Tq && kg <= dim) ? Q[kg, tg, b] : Float16(0)
+                As[tloc, kloc] = (tg <= Tq && kg <= dim) ? Q[kg, tg, b] : Float16(0)
             end
             for e in tid:32:(WMMA_TILE * WMMA_TILE)
                 kloc = ((e - 1) % WMMA_TILE) + 1
                 uloc = ((e - 1) ÷ WMMA_TILE) + 1
                 kg = k0 + kloc
                 ug = u0 + uloc
-                Bs[kloc, uloc] = (live && kg <= dim && ug <= Td) ? D[kg, ug, b] : Float16(0)
+                Bs[kloc, uloc] = (kg <= dim && ug <= Td) ? D[kg, ug, b] : Float16(0)
             end
             sync_threads()
             a_frag = WMMA.load_a(pointer(As), WMMA_TILE, WMMA.ColMajor, conf)
@@ -163,7 +165,7 @@ function paired_wmma_kernel!(argmax_out, partial, Q, D, qmask, dmask)
         end
         WMMA.store_d(pointer(Cs), c_frag, WMMA_TILE, WMMA.ColMajor, conf)
         sync_threads()
-        if live && tid <= WMMA_TILE
+        if tid <= WMMA_TILE
             tg = t0 + tid
             if tg <= Tq && qmask[tg, b]
                 for uloc in 1:WMMA_TILE
@@ -180,7 +182,7 @@ function paired_wmma_kernel!(argmax_out, partial, Q, D, qmask, dmask)
         end
         sync_threads()
     end
-    if live && tid <= WMMA_TILE
+    if tid <= WMMA_TILE
         tg = t0 + tid
         if tg <= Tq
             @inbounds partial[tg, b] = arg == Int32(0) ? Float16(0) : Float16(mx)

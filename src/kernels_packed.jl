@@ -218,17 +218,24 @@ end
                                                @Const(cu), @Const(qmask),
                                                @Const(args), @Const(Δ),
                                                @Const(inv_n))
-    k, t, b = @index(Global, NTuple)
+    k, t = @index(Global, NTuple)
+    acc = zero(eltype(dq))
     @inbounds if qmask[t]
-        a = Int(cu[b])
-        Td = Int(cu[b + 1]) - a
-        u = Int(args[t, b])
-        if 1 <= u <= Td
-            δt = Δ[b] * inv_n[1]
-            @atomic dq[k, t] += δt * packed[k, a + u - 1]
-            @atomic dP[k, a + u - 1] += δt * q[k, t]
+        qkt = q[k, t]
+        inv = inv_n[1]
+        B = length(cu) - 1
+        for b in 1:B
+            a = Int(cu[b])
+            Td = Int(cu[b + 1]) - a
+            u = Int(args[t, b])
+            if 1 <= u <= Td
+                δt = Δ[b] * inv
+                acc += δt * packed[k, a + u - 1]
+                @atomic dP[k, a + u - 1] += δt * qkt
+            end
         end
     end
+    @inbounds dq[k, t] = acc
 end
 
 @kernel function unified_varlen_atomic_kernel!(dQp, dDp, @Const(Qp), @Const(Dp),
@@ -244,7 +251,7 @@ end
         u = Int(args[t, n])
         if 1 <= u <= Td
             δt = Δ[n] * inv_n[n]
-            @atomic dQp[k, qa + t - 1] += δt * Dp[k, da + u - 1]
+            dQp[k, qa + t - 1] = δt * Dp[k, da + u - 1]
             @atomic dDp[k, da + u - 1] += δt * Qp[k, qa + t - 1]
         end
     end

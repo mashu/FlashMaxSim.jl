@@ -131,8 +131,8 @@ end
 end
 
 @kernel unsafe_indices=true function int8_paired_tile_kernel!(argmax_out, partial,
-                                                              @Const(Qc), @Const(Qs),
-                                                              @Const(Dc), @Const(Ds),
+                                                              @Const(Qc), @Const(qscales),
+                                                              @Const(Dc), @Const(dscales),
                                                               @Const(qmask), @Const(dmask))
     gt, gb = @index(Group, NTuple)
     lt, lb = @index(Local, NTuple)
@@ -140,22 +140,22 @@ end
     bgs = @uniform @groupsize()[2]
     t = (gt - 1) * tgs + lt
     b = (gb - 1) * bgs + lb
-    T = eltype(Qs)
+    T = eltype(qscales)
     dim = @uniform size(Qc, 1)
     Td = @uniform size(Dc, 2)
     Tq = @uniform size(Qc, 2)
     B = @uniform size(Qc, 3)
     live = b <= B
     valid = live && t <= Tq && @inbounds(qmask[t, b])
-    Qloc = @localmem Int8 (TILE_K + 1, TILE_Q)
-    Dloc = @localmem Int8 (TILE_K + 1, TILE_D)
+    Qs = @localmem Int8 (TILE_K + 1, TILE_Q)
+    Ds = @localmem Int8 (TILE_K + 1, TILE_D)
     acc = @private Int32 (TILE_D,)
     mx = zero(T)
     arg = Int32(0)
     ncell = TILE_K * TILE_D
     gs = @uniform prod(@groupsize())
     lid = @index(Local, Linear)
-    qt = valid ? T(Qs[t, b]) : zero(T)
+    qt = valid ? T(qscales[t, b]) : zero(T)
     @inbounds for u0 in 1:TILE_D:Td
         for uu in 1:TILE_D
             acc[uu] = Int32(0)
@@ -168,18 +168,18 @@ end
                     uu = ((e - 1) ÷ TILE_K) + 1
                     k = k0 + kk - 1
                     u = u0 + uu - 1
-                    Dloc[kk, uu] = (live && k <= dim && u <= Td) ? Dc[k, u, b] : Int8(0)
+                    Ds[kk, uu] = (live && k <= dim && u <= Td) ? Dc[k, u, b] : Int8(0)
                 end
             end
             for kk in 1:TILE_K
                 k = k0 + kk - 1
-                Qloc[kk, lt] = (valid && k <= dim) ? Qc[k, t, b] : Int8(0)
+                Qs[kk, lt] = (valid && k <= dim) ? Qc[k, t, b] : Int8(0)
             end
             @synchronize()
             for uu in 1:TILE_D
                 s = acc[uu]
                 for kk in 1:TILE_K
-                    s += Int32(Qloc[kk, lt]) * Int32(Dloc[kk, uu])
+                    s += Int32(Qs[kk, lt]) * Int32(Ds[kk, uu])
                 end
                 acc[uu] = s
             end
@@ -190,7 +190,7 @@ end
                 u = u0 + uu - 1
                 u > Td && continue
                 dmask[u, b] || continue
-                s = qt * T(Ds[u, b]) * T(acc[uu])
+                s = qt * T(dscales[u, b]) * T(acc[uu])
                 if arg == Int32(0) || s > mx
                     mx = s
                     arg = Int32(u)

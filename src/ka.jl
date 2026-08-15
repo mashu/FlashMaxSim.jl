@@ -25,8 +25,6 @@ end
 finish!(backend::CPU) = KernelAbstractions.synchronize(backend)
 finish!(::Backend) = nothing
 
-sync!(backend) = KernelAbstractions.synchronize(backend)
-
 zeros_like(x::AbstractArray{T}) where {T} = fill!(similar(x), zero(T))
 zeros_like(x::AbstractArray, ::Type{T}, dims::Integer...) where {T} =
     fill!(similar(x, T, dims...), zero(T))

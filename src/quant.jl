@@ -38,14 +38,22 @@ reshape_scales(scales::AbstractVector, x::AbstractMatrix) = reshape(scales, 1, :
 reshape_scales(scales::AbstractMatrix, x::AbstractArray{<:Any,3}) =
     reshape(scales, 1, size(x, 2), size(x, 3))
 
-function dequant_int8(idx::Int8Index{<:AbstractMatrix})
-    T = eltype(idx.scales)
+function dequant_int8(idx::Int8Index{<:AbstractArray, <:AbstractArray{T}}) where {T}
     T.(idx.codes) .* reshape_scales(idx.scales, idx.codes)
 end
 
-function dequant_int8(idx::Int8Index{<:AbstractArray{<:Any,3}})
-    T = eltype(idx.scales)
-    T.(idx.codes) .* reshape_scales(idx.scales, idx.codes)
+Adapt.adapt_structure(to, idx::Int8Index) =
+    Int8Index(adapt(to, idx.codes), adapt(to, idx.scales))
+
+function require_int8_index(d::Int8Index{<:AbstractMatrix})
+    size(d.codes, 2) == length(d.scales) || throw(DimensionMismatch("Int8Index token count"))
+    nothing
+end
+
+function require_int8_index(d::Int8Index{<:AbstractArray{<:Any,3}})
+    size(d.codes, 2) == size(d.scales, 1) || throw(DimensionMismatch("Int8Index token count"))
+    size(d.codes, 3) == size(d.scales, 2) || throw(DimensionMismatch("Int8Index batch"))
+    nothing
 end
 
 function int8_pair_forward_host(qc::AbstractMatrix{Int8}, qs::AbstractVector{T},
@@ -105,6 +113,7 @@ function int8_pair_forward(q::AbstractMatrix{T}, d::Int8Index,
                            qmask::AbstractVector{Bool},
                            dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
     qq = quantize_int8_symmetric(q)
+    require_int8_index(d)
     require_colocated(q, qq.codes, qq.scales, d.codes, d.scales, qmask, dmask)
     int8_pair_forward(array_backend(q), qq, d, qmask, dmask)
 end
@@ -116,9 +125,8 @@ int8_pair_forward(::Backend, qq::Int8Index, d::Int8Index, qmask, dmask) =
     int8_pair_forward_ka(array_backend(qq.codes), qq.codes, qq.scales, d.codes, d.scales,
                          qmask, dmask)
 
-function int8_paired_forward_host(Qc, Qs, Dc, Ds, qmask, dmask)
+function int8_paired_forward_host(Qc, Qs::AbstractMatrix{T}, Dc, Ds, qmask, dmask) where {T}
     Tq, B = size(Qc, 2), size(Qc, 3)
-    T = eltype(Qs)
     scores = zeros(T, B)
     args = zeros(Int32, Tq, B)
     @inbounds for b in 1:B
@@ -131,9 +139,9 @@ function int8_paired_forward_host(Qc, Qs, Dc, Ds, qmask, dmask)
     scores, args
 end
 
-function int8_paired_forward_ka(backend::Backend, Qc, Qs, Dc, Ds, qmask, dmask)
+function int8_paired_forward_ka(backend::Backend, Qc, Qs::AbstractMatrix{T},
+                                Dc, Ds, qmask, dmask) where {T}
     Tq, B = size(Qc, 2), size(Qc, 3)
-    T = eltype(Qs)
     args = zeros_like(Qs, Int32, Tq, B)
     partial = zeros_like(Qs, T, Tq, B)
     launch!(int8_paired_token_kernel!, backend, (Tq, B), args, partial,
@@ -143,9 +151,9 @@ function int8_paired_forward_ka(backend::Backend, Qc, Qs, Dc, Ds, qmask, dmask)
     scores, args
 end
 
-function int8_paired_forward_ka(backend::GPU, Qc, Qs, Dc, Ds, qmask, dmask)
+function int8_paired_forward_ka(backend::GPU, Qc, Qs::AbstractMatrix{T},
+                                Dc, Ds, qmask, dmask) where {T}
     Tq, B = size(Qc, 2), size(Qc, 3)
-    T = eltype(Qs)
     args = zeros_like(Qs, Int32, Tq, B)
     partial = zeros_like(Qs, T, Tq, B)
     nd = (Tq, B)
@@ -160,6 +168,7 @@ function int8_paired_forward(Q::AbstractArray{T,3}, D::Int8Index,
                              qmask::AbstractMatrix{Bool},
                              dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
     QQ = quantize_int8_symmetric(Q)
+    require_int8_index(D)
     require_colocated(Q, QQ.codes, QQ.scales, D.codes, D.scales, qmask, dmask)
     int8_paired_forward(array_backend(Q), QQ, D, qmask, dmask)
 end
@@ -172,5 +181,3 @@ int8_paired_forward(::Backend, QQ::Int8Index, D::Int8Index, qmask, dmask) =
                            D.codes, D.scales, qmask, dmask)
 
 ChainRulesCore.@non_differentiable quantize_int8_symmetric(::AbstractArray)
-ChainRulesCore.@non_differentiable pack_docs(::AbstractVector)
-ChainRulesCore.@non_differentiable pack_pairs(::AbstractVector, ::AbstractVector)

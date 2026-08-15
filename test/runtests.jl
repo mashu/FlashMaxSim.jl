@@ -5,6 +5,7 @@ using Zygote
 using LinearAlgebra: dot, norm
 using ChainRulesCore: rrule, ZeroTangent, Thunk
 using KernelAbstractions
+using Adapt
 
 cosine(a, b) = begin
     av = vec(Float64.(a)); bv = vec(Float64.(b))

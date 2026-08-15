@@ -114,29 +114,27 @@ function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
 end
 
 function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
-                              q::AbstractMatrix{T}, packed::AbstractMatrix{T},
-                              cu::AbstractVector{<:Integer},
+                              q::AbstractMatrix{T}, D::PackedSeq{<:AbstractMatrix{T}},
                               qmask::AbstractVector{Bool}) where {T<:AbstractFloat}
-    scores, args = packed_forward(q, packed, cu, qmask, cfg.neg)
+    scores, args = packed_forward(q, D, qmask, cfg.neg)
     scores_n, inv_n = packed_finalize(scores, qmask, cfg.normalize)
     function pullback(Δ)
         Δh = as_array_cotangent(T, Δ, scores_n)
-        dq, dP = packed_pullback(Δh, q, packed, cu, qmask, args, inv_n, cfg.backward)
-        (NoTangent(), NoTangent(), dq, dP, NoTangent(), NoTangent())
+        dq, dP = packed_pullback(Δh, q, D, qmask, args, inv_n, cfg.backward)
+        (NoTangent(), NoTangent(), dq, packed_tangent(D, dP), NoTangent())
     end
     scores_n, pullback
 end
 
 function ChainRulesCore.rrule(::typeof(maxsim), cfg::MaxSim{T},
-                              Qp::AbstractMatrix{T}, Dp::AbstractMatrix{T},
-                              cu_q::AbstractVector{<:Integer},
-                              cu_d::AbstractVector{<:Integer}) where {T<:AbstractFloat}
-    scores, args = varlen_forward(Qp, Dp, cu_q, cu_d, cfg.neg)
-    scores_n, inv_n = varlen_finalize(scores, cu_q, cfg.normalize)
+                              Q::PackedSeq{<:AbstractMatrix{T}},
+                              D::PackedSeq{<:AbstractMatrix{T}}) where {T<:AbstractFloat}
+    scores, args = varlen_forward(Q, D, cfg.neg)
+    scores_n, inv_n = varlen_finalize(scores, Q, cfg.normalize)
     function pullback(Δ)
         Δh = as_array_cotangent(T, Δ, scores_n)
-        dQ, dD = varlen_pullback(Δh, Qp, Dp, cu_q, cu_d, args, inv_n, cfg.backward)
-        (NoTangent(), NoTangent(), dQ, dD, NoTangent(), NoTangent())
+        dQ, dDtok = varlen_pullback(Δh, Q, D, args, inv_n, cfg.backward)
+        (NoTangent(), NoTangent(), packed_tangent(Q, dQ), packed_tangent(D, dDtok))
     end
     scores_n, pullback
 end

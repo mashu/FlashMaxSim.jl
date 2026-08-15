@@ -13,6 +13,7 @@
 
 module FlashMaxSim
 
+using Adapt
 using ChainRulesCore
 using KernelAbstractions
 using LinearAlgebra
@@ -20,7 +21,7 @@ import KernelAbstractions: @atomic
 
 export MaxSim, InBatch, BackwardStrategy, AtomicUnified, InvGrid
 export maxsim, maxsim_dense
-export pack_docs, pack_pairs, Int8Index, quantize_int8_symmetric
+export pack_docs, pack_pairs, PackedSeq, nseq, Int8Index, quantize_int8_symmetric
 
 include("types.jl")
 include("colocation.jl")
