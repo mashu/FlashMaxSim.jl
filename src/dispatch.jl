@@ -175,8 +175,7 @@ end
     maxsim(cfg::MaxSim, q, D::PackedSeq, qmask)
 
 One query against B ragged documents (`pack_docs`). Returns `(B,)` with
-`out[b] = MaxSim(q, D.tokens[:, D.cu[b]:(D.cu[b+1]-1)])`. GPU `InvGrid`
-is not supported.
+`out[b] = MaxSim(q, D.tokens[:, D.cu[b]:(D.cu[b+1]-1)])`.
 """
 maxsim(q::AbstractMatrix{T}, D::PackedSeq{<:AbstractMatrix{T}};
        kwargs...) where {T<:AbstractFloat} =
@@ -209,7 +208,7 @@ end
     maxsim(cfg::MaxSim, Q::PackedSeq, D::PackedSeq)
 
 Variable-length paired MaxSim (`pack_pairs`). Returns `(N,)` with
-`out[n] = MaxSim(Q[n], D[n])`. GPU `InvGrid` is not supported.
+`out[n] = MaxSim(Q[n], D[n])`.
 """
 function maxsim(Q::PackedSeq{<:AbstractMatrix{T}}, D::PackedSeq{<:AbstractMatrix{T}};
                 neg::Real = T(-1.0f4), normalize::Bool = false,

@@ -172,9 +172,7 @@ function packed_forward_ka(backend::GPU, q::AbstractMatrix{T}, P::PackedSeq,
     B = nseq(P)
     args = zeros_like(q, Int32, Tq, B)
     partial = zeros_like(q, T, Tq, B)
-    nd = (Tq, B)
-    launch_grouped!(packed_tile_kernel!, backend, query_tile_group(nd), nd,
-                    args, partial, q, P.tokens, P.cu, qmask)
+    launch_packed_scan!(backend, args, partial, q, P.tokens, P.cu, qmask)
     scores = vec(sum(partial; dims = 1))
     finish!(backend)
     scores, args
@@ -194,6 +192,10 @@ packed_forward(::CPU, q::AbstractMatrix{T}, P::PackedSeq,
 packed_forward(::Backend, q::AbstractMatrix{T}, P::PackedSeq,
                qmask::AbstractVector{Bool}, neg::T) where {T<:AbstractFloat} =
     packed_forward_ka(array_backend(q), q, P, qmask, neg)
+
+launch_packed_scan!(backend::GPU, args, partial, q, packed, cu, qmask) =
+    launch_grouped!(packed_tile_kernel!, backend, query_tile_group((size(q, 2), length(cu) - 1)),
+                    (size(q, 2), length(cu) - 1), args, partial, q, packed, cu, qmask)
 
 function varlen_forward_host(Q::PackedSeq, D::PackedSeq, ::T) where {T<:AbstractFloat}
     N = nseq(Q)
@@ -242,9 +244,7 @@ function varlen_forward_ka(backend::GPU, Q::PackedSeq, D::PackedSeq,
     max_q = Q.max_len
     args = zeros_like(Q.tokens, Int32, max_q, N)
     partial = zeros_like(Q.tokens, T, max_q, N)
-    nd = (max_q, N)
-    launch_grouped!(varlen_tile_kernel!, backend, query_tile_group(nd), nd,
-                    args, partial, Q.tokens, D.tokens, Q.cu, D.cu)
+    launch_varlen_scan!(backend, args, partial, Q.tokens, D.tokens, Q.cu, D.cu)
     scores = vec(sum(partial; dims = 1))
     finish!(backend)
     scores, args
@@ -261,6 +261,11 @@ varlen_forward(::CPU, Q::PackedSeq, D::PackedSeq, neg::T) where {T<:AbstractFloa
 
 varlen_forward(::Backend, Q::PackedSeq, D::PackedSeq, neg::T) where {T<:AbstractFloat} =
     varlen_forward_ka(array_backend(Q.tokens), Q, D, neg)
+
+launch_varlen_scan!(backend::GPU, args, partial, Qp, Dp, cu_q, cu_d) =
+    launch_grouped!(varlen_tile_kernel!, backend,
+                    query_tile_group((size(args, 1), size(args, 2))),
+                    (size(args, 1), size(args, 2)), args, partial, Qp, Dp, cu_q, cu_d)
 
 function packed_inv_n(qmask::AbstractVector{Bool}, ::Type{T}, normalize::Bool,
                       prototype::AbstractArray) where {T}
@@ -335,7 +340,7 @@ function packed_apply_pullback!(::AtomicUnified, backend, Δ, q, P, qmask, args,
 end
 
 function packed_apply_pullback!(::InvGrid, backend, Δ, q, P, qmask, args, inv_n)
-    throw(ArgumentError("packed MaxSim InvGrid is host-only; use AtomicUnified()"))
+    packed_pullback_invgrid(backend, Δ, q, P, qmask, args, inv_n)
 end
 
 function packed_pullback_ka(backend, Δ::AbstractVector{T}, q, P::PackedSeq, qmask, args,
@@ -345,6 +350,22 @@ function packed_pullback_ka(backend, Δ::AbstractVector{T}, q, P::PackedSeq, qma
     dim, Tq = size(q)
     launch!(unified_packed_atomic_kernel!, backend, (dim, Tq),
             dq, dP, q, P.tokens, P.cu, qmask, args, Δ, inv_n)
+    finish!(backend)
+    dq, dP
+end
+
+function packed_pullback_invgrid(backend, Δ::AbstractVector{T}, q, P::PackedSeq, qmask,
+                                 args, inv_n) where {T}
+    dq = zeros_like(q)
+    dP = zeros_like(P.tokens)
+    dim, Tq = size(q)
+    n_dest = size(P.tokens, 2)
+    B = nseq(P)
+    launch!(gather_packed_kernel!, backend, (dim, Tq),
+            dq, P.tokens, P.cu, qmask, args, Δ, inv_n)
+    row_ptr, col_idx = build_packed_csr(backend, q, P.cu, args, qmask, n_dest, Tq, B)
+    launch!(scatter_packed_csr_kernel!, backend, (dim, n_dest),
+            dP, q, row_ptr, col_idx, Δ, inv_n, Tq)
     finish!(backend)
     dq, dP
 end
@@ -384,7 +405,7 @@ function varlen_apply_pullback!(::AtomicUnified, backend, Δ, Q, D, args, inv_n)
 end
 
 function varlen_apply_pullback!(::InvGrid, backend, Δ, Q, D, args, inv_n)
-    throw(ArgumentError("varlen MaxSim InvGrid is host-only; use AtomicUnified()"))
+    varlen_pullback_invgrid(backend, Δ, Q, D, args, inv_n)
 end
 
 function varlen_pullback_ka(backend, Δ::AbstractVector{T}, Q::PackedSeq, D::PackedSeq, args,
@@ -396,6 +417,23 @@ function varlen_pullback_ka(backend, Δ::AbstractVector{T}, Q::PackedSeq, D::Pac
     N = nseq(Q)
     launch!(unified_varlen_atomic_kernel!, backend, (dim, max_q, N),
             dQ, dD, Q.tokens, D.tokens, Q.cu, D.cu, args, Δ, inv_n)
+    finish!(backend)
+    dQ, dD
+end
+
+function varlen_pullback_invgrid(backend, Δ::AbstractVector{T}, Q::PackedSeq, D::PackedSeq,
+                                 args, inv_n) where {T}
+    dQ = zeros_like(Q.tokens)
+    dD = zeros_like(D.tokens)
+    dim = size(Q.tokens, 1)
+    max_q = Q.max_len
+    N = nseq(Q)
+    n_dest = size(D.tokens, 2)
+    launch!(gather_varlen_kernel!, backend, (dim, max_q, N),
+            dQ, D.tokens, Q.cu, D.cu, args, Δ, inv_n)
+    row_ptr, col_idx = build_varlen_csr(backend, Q.tokens, Q.cu, D.cu, args, n_dest, max_q, N)
+    launch!(scatter_varlen_csr_kernel!, backend, (dim, n_dest),
+            dD, Q.tokens, Q.cu, row_ptr, col_idx, Δ, inv_n, max_q)
     finish!(backend)
     dQ, dD
 end

@@ -63,3 +63,29 @@ function build_candidates_csr(backend, prototype, idxs, args, qmask, Td, N, Tq, 
             col_idx, cursor, idxs, args, qmask, Td, N, Tq, C)
     row_ptr, col_idx
 end
+
+function build_packed_csr(backend, prototype, cu, args, qmask, n_dest, Tq, B)
+    row_ptr = zeros_like(prototype, Int32, n_dest + 1)
+    launch!(csr_count_packed_kernel!, backend, (Tq, B),
+            row_ptr, cu, qmask, args, n_dest)
+    launch!(csr_prefix_pair_kernel!, backend, 1, row_ptr, n_dest)
+    cursor = similar(row_ptr)
+    csr_copy!(backend, cursor, row_ptr)
+    col_idx = zeros_like(prototype, Int32, Tq * B)
+    launch!(csr_fill_packed_kernel!, backend, (Tq, B),
+            col_idx, cursor, cu, qmask, args, n_dest, Tq)
+    row_ptr, col_idx
+end
+
+function build_varlen_csr(backend, prototype, cu_q, cu_d, args, n_dest, max_q, N)
+    row_ptr = zeros_like(prototype, Int32, n_dest + 1)
+    launch!(csr_count_varlen_kernel!, backend, (max_q, N),
+            row_ptr, cu_q, cu_d, args, n_dest)
+    launch!(csr_prefix_pair_kernel!, backend, 1, row_ptr, n_dest)
+    cursor = similar(row_ptr)
+    csr_copy!(backend, cursor, row_ptr)
+    col_idx = zeros_like(prototype, Int32, max_q * N)
+    launch!(csr_fill_varlen_kernel!, backend, (max_q, N),
+            col_idx, cursor, cu_q, cu_d, args, n_dest, max_q)
+    row_ptr, col_idx
+end

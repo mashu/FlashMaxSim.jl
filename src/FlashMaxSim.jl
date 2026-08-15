@@ -2,11 +2,13 @@
 #
 # Pair / paired / candidate MaxSim fuse the per-token argmax without storing
 # a dense query×doc similarity matrix (paper Alg. 1). GPU scans tile Q/D in
-# SRAM; `CuArray{Float16}` uses WMMA tensor cores. In-batch contrastive
-# scoring tiles GEMM chunks of `D'Q`. Packed `cu_seqlens` skips padding.
-# INT8 indices use deferred dequant (forward-only). Training backward saves
-# only argmax indices and aggregates with fused atomic-unified scatter, or
-# inverse-grid CSR (paper Alg. 3 / §4.2) built on-device for every KA backend.
+# SRAM; `CuArray{Float16}` uses WMMA tensor cores (pair, paired, packed,
+# varlen, candidates, in-batch). INT8 indices use deferred dequant and INT8
+# WMMA on sm ≥ 7.5 (forward-only). In-batch contrastive scoring tiles GEMM
+# chunks of `D'Q` on CPU / Float32 GPU; F16 CUDA fuses the same MaxSim scan.
+# Training backward saves only argmax indices and aggregates with fused
+# atomic-unified scatter, or inverse-grid CSR (paper Alg. 3 / §4.2) on every
+# KA backend including packed / varlen.
 #
 # Backend-agnostic via KernelAbstractions. Features, masks, scores, argmax,
 # and cotangents stay on the same backend — no host round-trips of Q/D.

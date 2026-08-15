@@ -127,7 +127,10 @@
     gq_p, gP_p = gradient((q, p) -> sum(maxsim(q, p)), qg2, Pg)
     @test gq_p isa CuArray && gP_p.tokens isa CuArray
     cfg_inv = MaxSim{T}(T(-1.0f4), false, InvGrid())
-    @test_throws ArgumentError gradient((q, p) -> sum(maxsim(cfg_inv, q, p, qmg)), qg2, Pg)
+    gq_i, gP_i = gradient((q, p) -> sum(maxsim(cfg_inv, q, p, qmg)), qg2, Pg)
+    @test gq_i isa CuArray && gP_i.tokens isa CuArray
+    @test cosine(Array(gq_i), Array(gq_p)) ≥ 0.999
+    @test cosine(Array(gP_i.tokens), Array(gP_p.tokens)) ≥ 0.999
 
     qs = [q, randn(T, dim, 4)]
     ds = [docs[1], docs[3]]
@@ -136,6 +139,9 @@
     @test s_vl ≈ maxsim(Qp, Dp) rtol=1e-5 atol=1e-5
     gQv, gDv = gradient((Q, D) -> sum(maxsim(Q, D)), adapt(CuArray, Qp), adapt(CuArray, Dp))
     @test gQv.tokens isa CuArray && gDv.tokens isa CuArray
+    gQvi, gDvi = gradient((Q, D) -> sum(maxsim(cfg_inv, Q, D)), adapt(CuArray, Qp), adapt(CuArray, Dp))
+    @test cosine(Array(gQvi.tokens), Array(gQv.tokens)) ≥ 0.999
+    @test cosine(Array(gDvi.tokens), Array(gDv.tokens)) ≥ 0.999
 
     d_idx = quantize_int8_symmetric(d)
     d_idx_g = adapt(CuArray, d_idx)
@@ -143,6 +149,7 @@
     @test only(Array(s8g)) ≈ maxsim(q, d_idx, qm, dm) rtol=1e-5 atol=1e-5
     D8 = quantize_int8_symmetric(D)
     @test Array(maxsim(CuArray(Q), adapt(CuArray, D8))) ≈ maxsim(Q, D8) rtol=1e-5 atol=1e-5
+    @test FlashMaxSim.tensor_cores_active(KernelAbstractions.get_backend(qg), Int8)
 
     # Float16 WMMA vs host (tensor cores when sm ≥ 7.0)
     q16, d16 = Float16.(q), Float16.(d)
@@ -154,4 +161,12 @@
     @test FlashMaxSim.tensor_cores_active(KernelAbstractions.get_backend(q16g), Float16)
     Q16, D16 = Float16.(Q), Float16.(D)
     @test Array(maxsim(CuArray(Q16), CuArray(D16))) ≈ maxsim(Q16, D16) rtol=5e-2 atol=5e-2
+    P16 = pack_docs([Float16.(doc) for doc in docs])
+    @test Array(maxsim(CuArray(q16), adapt(CuArray, P16))) ≈ maxsim(q16, P16) rtol=5e-2 atol=5e-2
+    Qp16, Dp16 = pack_pairs([Float16.(x) for x in qs], [Float16.(x) for x in ds])
+    @test Array(maxsim(adapt(CuArray, Qp16), adapt(CuArray, Dp16))) ≈ maxsim(Qp16, Dp16) rtol=5e-2 atol=5e-2
+    @test Array(maxsim(CuArray(Q16), CuArray(D16), InBatch())) ≈ maxsim(Q16, D16, InBatch()) rtol=5e-2 atol=5e-2
+    gallery16 = Float16.(gallery)
+    @test Array(maxsim(CuArray(Q16), CuArray(gallery16), idxg)) ≈
+          maxsim(Q16, gallery16, idxs) rtol=5e-2 atol=5e-2
 end

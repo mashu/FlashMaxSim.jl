@@ -102,12 +102,15 @@ function int8_pair_forward_ka(backend::GPU, qc, qs, dc, ds, qmask, dmask)
     Tq = size(qc, 2)
     args = zeros_like(qs, Int32, Tq)
     partial = zeros_like(qs)
-    launch_grouped!(int8_pair_tile_kernel!, backend, query_tile_group(Tq), Tq,
-                    args, partial, qc, qs, dc, ds, qmask, dmask)
+    launch_int8_pair_scan!(backend, args, partial, qc, qs, dc, ds, qmask, dmask)
     score = sum_length1(backend, partial)
     finish!(backend)
     score, args
 end
+
+launch_int8_pair_scan!(backend::GPU, args, partial, qc, qs, dc, ds, qmask, dmask) =
+    launch_grouped!(int8_pair_tile_kernel!, backend, query_tile_group(size(qc, 2)),
+                    size(qc, 2), args, partial, qc, qs, dc, ds, qmask, dmask)
 
 function int8_pair_forward(q::AbstractMatrix{T}, d::Int8Index,
                            qmask::AbstractVector{Bool},
@@ -156,13 +159,16 @@ function int8_paired_forward_ka(backend::GPU, Qc, Qs::AbstractMatrix{T},
     Tq, B = size(Qc, 2), size(Qc, 3)
     args = zeros_like(Qs, Int32, Tq, B)
     partial = zeros_like(Qs, T, Tq, B)
-    nd = (Tq, B)
-    launch_grouped!(int8_paired_tile_kernel!, backend, query_tile_group(nd), nd,
-                    args, partial, Qc, Qs, Dc, Ds, qmask, dmask)
+    launch_int8_paired_scan!(backend, args, partial, Qc, Qs, Dc, Ds, qmask, dmask)
     scores = vec(sum(partial; dims = 1))
     finish!(backend)
     scores, args
 end
+
+launch_int8_paired_scan!(backend::GPU, args, partial, Qc, Qs, Dc, Ds, qmask, dmask) =
+    launch_grouped!(int8_paired_tile_kernel!, backend,
+                    query_tile_group((size(Qc, 2), size(Qc, 3))),
+                    (size(Qc, 2), size(Qc, 3)), args, partial, Qc, Qs, Dc, Ds, qmask, dmask)
 
 function int8_paired_forward(Q::AbstractArray{T,3}, D::Int8Index,
                              qmask::AbstractMatrix{Bool},

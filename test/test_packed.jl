@@ -127,4 +127,7 @@ end
     dq_k, dP_k = FlashMaxSim.packed_pullback_ka(backend, Δ, q, P, qm, a_k, inv_n)
     @test dq_k ≈ dq_h rtol=1e-5 atol=1e-5
     @test dP_k ≈ dP_h rtol=1e-5 atol=1e-5
+    dq_i, dP_i = FlashMaxSim.packed_pullback(backend, Δ, q, P, qm, a_k, inv_n, InvGrid())
+    @test dq_i ≈ dq_h rtol=1e-5 atol=1e-5
+    @test dP_i ≈ dP_h rtol=1e-5 atol=1e-5
 end

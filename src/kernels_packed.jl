@@ -268,3 +268,148 @@ end
     T = eltype(inv_n)
     @inbounds inv_n[n] = one(T) / T(max(Tq, 1))
 end
+
+# ---- InvGrid packed / varlen (CSR dest = packed column) ----------------------
+
+@kernel function gather_packed_kernel!(dq, @Const(packed), @Const(cu),
+                                       @Const(qmask), @Const(args),
+                                       @Const(Δ), @Const(inv_n))
+    k, t = @index(Global, NTuple)
+    acc = zero(eltype(dq))
+    @inbounds if qmask[t]
+        inv = inv_n[1]
+        B = length(cu) - 1
+        for b in 1:B
+            a = Int(cu[b])
+            Td = Int(cu[b + 1]) - a
+            u = Int(args[t, b])
+            if 1 <= u <= Td
+                acc += (Δ[b] * inv) * packed[k, a + u - 1]
+            end
+        end
+    end
+    @inbounds dq[k, t] = acc
+end
+
+@kernel function csr_count_packed_kernel!(row_ptr, @Const(cu), @Const(qmask),
+                                          @Const(args), n_dest)
+    t, b = @index(Global, NTuple)
+    @inbounds if qmask[t]
+        a = Int(cu[b])
+        Td = Int(cu[b + 1]) - a
+        u = Int(args[t, b])
+        if 1 <= u <= Td
+            dest = a + u - 1
+            if 1 <= dest <= n_dest
+                @atomic row_ptr[dest + 1] += Int32(1)
+            end
+        end
+    end
+end
+
+@kernel function csr_fill_packed_kernel!(col_idx, cursor, @Const(cu),
+                                         @Const(qmask), @Const(args),
+                                         n_dest, Tq)
+    t, b = @index(Global, NTuple)
+    @inbounds if qmask[t]
+        a = Int(cu[b])
+        Td = Int(cu[b + 1]) - a
+        u = Int(args[t, b])
+        if 1 <= u <= Td
+            dest = a + u - 1
+            if 1 <= dest <= n_dest
+                pos = @atomic cursor[dest] += Int32(1)
+                col_idx[pos] = Int32(t + (b - 1) * Tq)
+            end
+        end
+    end
+end
+
+@kernel function scatter_packed_csr_kernel!(dP, @Const(q), @Const(row_ptr),
+                                            @Const(col_idx), @Const(Δ),
+                                            @Const(inv_n), Tq)
+    k, dest = @index(Global, NTuple)
+    acc = zero(eltype(dP))
+    @inbounds begin
+        a = Int(row_ptr[dest]) + 1
+        stop = Int(row_ptr[dest + 1])
+        inv = inv_n[1]
+        for p in a:stop
+            s = Int(col_idx[p])
+            t = ((s - 1) % Tq) + 1
+            b = ((s - 1) ÷ Tq) + 1
+            acc += (Δ[b] * inv) * q[k, t]
+        end
+        dP[k, dest] = acc
+    end
+end
+
+@kernel function gather_varlen_kernel!(dQp, @Const(Dp), @Const(cu_q), @Const(cu_d),
+                                       @Const(args), @Const(Δ), @Const(inv_n))
+    k, t, n = @index(Global, NTuple)
+    qa = Int(cu_q[n])
+    Tq = Int(cu_q[n + 1]) - qa
+    da = Int(cu_d[n])
+    Td = Int(cu_d[n + 1]) - da
+    @inbounds if t <= Tq
+        u = Int(args[t, n])
+        if 1 <= u <= Td
+            dQp[k, qa + t - 1] = (Δ[n] * inv_n[n]) * Dp[k, da + u - 1]
+        end
+    end
+end
+
+@kernel function csr_count_varlen_kernel!(row_ptr, @Const(cu_q), @Const(cu_d),
+                                          @Const(args), n_dest)
+    t, n = @index(Global, NTuple)
+    Tq = Int(cu_q[n + 1]) - Int(cu_q[n])
+    @inbounds if t <= Tq
+        da = Int(cu_d[n])
+        Td = Int(cu_d[n + 1]) - da
+        u = Int(args[t, n])
+        if 1 <= u <= Td
+            dest = da + u - 1
+            if 1 <= dest <= n_dest
+                @atomic row_ptr[dest + 1] += Int32(1)
+            end
+        end
+    end
+end
+
+@kernel function csr_fill_varlen_kernel!(col_idx, cursor, @Const(cu_q),
+                                         @Const(cu_d), @Const(args),
+                                         n_dest, max_q)
+    t, n = @index(Global, NTuple)
+    Tq = Int(cu_q[n + 1]) - Int(cu_q[n])
+    @inbounds if t <= Tq
+        da = Int(cu_d[n])
+        Td = Int(cu_d[n + 1]) - da
+        u = Int(args[t, n])
+        if 1 <= u <= Td
+            dest = da + u - 1
+            if 1 <= dest <= n_dest
+                pos = @atomic cursor[dest] += Int32(1)
+                col_idx[pos] = Int32(t + (n - 1) * max_q)
+            end
+        end
+    end
+end
+
+@kernel function scatter_varlen_csr_kernel!(dDp, @Const(Qp), @Const(cu_q),
+                                            @Const(row_ptr), @Const(col_idx),
+                                            @Const(Δ), @Const(inv_n), max_q)
+    k, dest = @index(Global, NTuple)
+    acc = zero(eltype(dDp))
+    @inbounds begin
+        a = Int(row_ptr[dest]) + 1
+        stop = Int(row_ptr[dest + 1])
+        for p in a:stop
+            s = Int(col_idx[p])
+            t = ((s - 1) % max_q) + 1
+            n = ((s - 1) ÷ max_q) + 1
+            qa = Int(cu_q[n])
+            acc += (Δ[n] * inv_n[n]) * Qp[k, qa + t - 1]
+        end
+        dDp[k, dest] = acc
+    end
+end

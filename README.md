@@ -26,9 +26,10 @@ Algorithm 3). Exact up to floating-point evaluation order (paper Prop. 1).
 
 Forward and backward run on the **same KernelAbstractions backend** as the
 features (CPU `Array` uses BLAS-tiled GEMM; CUDA / ROCm / Metal use SRAM-tiled
-kernels). `CuArray{Float16}` pair / paired scans use WMMA tensor cores when
-the device is sm ≥ 7.0. Scores, argmax tape, and cotangents stay on-device —
-no host round-trips of `Q` / `D`.
+kernels). `CuArray{Float16}` pair / paired / packed / varlen / candidate /
+in-batch scans use WMMA tensor cores when the device is sm ≥ 7.0. INT8
+indices use INT8 tensor cores on sm ≥ 7.5. Scores, argmax tape, and
+cotangents stay on-device — no host round-trips of `Q` / `D`.
 
 **Contract:** features and masks must be colocated (same KA backend). Host
 `BitArray` masks are allowed with `Array` features; GPU features need
@@ -110,10 +111,10 @@ s = maxsim(qg, dg)
 | Atomic-unified `∇D` | `backward = AtomicUnified()` — fused ∇Q+∇D, one D load, Q hoisted |
 | Inverse-grid `∇D` (Alg. 3) | `backward = InvGrid()` — CSR on every KA backend |
 | Packed `cu_seqlens` | `PackedSeq` via `pack_docs` / `pack_pairs`; `maxsim(q, P)` |
-| INT8 deferred dequant | `quantize_int8_symmetric` / `Int8Index` (forward-only) |
-| In-batch / candidate scoring | `InBatch`, index-matrix layouts |
+| INT8 deferred dequant | `quantize_int8_symmetric` / `Int8Index` (forward-only; INT8 WMMA on sm ≥ 7.5) |
+| In-batch / candidate scoring | `InBatch`, index-matrix layouts; F16 WMMA on CUDA |
 
-Not ported: split-`d` for `d>512`, Chamfer, INT8 tensor-core WMMA. Exact FP
+Not ported: split-`d` for `d>512`, Chamfer. Exact FP
 MaxSim scores and sparse AD structure match the paper operator used for
 ColBERT training / reranking.
 

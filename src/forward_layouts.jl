@@ -179,21 +179,31 @@ function inbatch_forward_ka(backend, Q::AbstractArray{T,3}, D::AbstractArray{T,3
     S = zeros_like(Q, T, Bd, Bq)
     args = zeros_like(Q, Int32, Tq, Bd, Bq)
     (Bd == 0 || Bq == 0 || Tq == 0 || Td == 0) && return S, args
-    Qmat = reshape(Q, dim, Tq * Bq)
+    inbatch_device_scan!(backend, S, args, Q, D, qmask, dmask)
+    finish!(backend)
+    S, args
+end
+
+inbatch_device_scan!(backend, S, args, Q, D, qmask, dmask) =
+    inbatch_gemm_scan!(backend, S, args, Q, D, qmask, dmask)
+
+function inbatch_gemm_scan!(backend, S, args, Q::AbstractArray{T,3}, D, qmask, dmask) where {T}
+    Tq, Bq = size(Q, 2), size(Q, 3)
+    Td, Bd = size(D, 2), size(D, 3)
+    Qmat = reshape(Q, size(Q, 1), Tq * Bq)
     chunk = inbatch_doc_chunk(T, Td, Tq, Bq, Bd)
     for j0 in 1:chunk:Bd
         j1 = min(j0 + chunk - 1, Bd)
         C = j1 - j0 + 1
         Dc = D[:, :, j0:j1]
-        A = reshape(Dc, dim, Td * C)
+        A = reshape(Dc, size(Q, 1), Td * C)
         M = A' * Qmat
         M4 = reshape(M, Td, C, Tq, Bq)
         dm = dmask[:, j0:j1]
         launch!(inbatch_accumulate_kernel!, backend, (Tq, C, Bq),
                 S, args, M4, qmask, dm, Int32(j0))
     end
-    finish!(backend)
-    S, args
+    nothing
 end
 
 # ---- candidates --------------------------------------------------------------
