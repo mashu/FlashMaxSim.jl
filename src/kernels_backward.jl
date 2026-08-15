@@ -63,62 +63,78 @@ end
     @inbounds dQ[k, t, b] = acc
 end
 
-# ---- atomic-unified scatter (∇D) --------------------------------------------
+# ---- fused atomic-unified (∇Q gather + ∇D scatter, Q hoisted) ----------------
+# One D load serves both grads. In-batch / candidates hoist Q out of the dest loop.
 
-@kernel function scatter_pair_atomic_kernel!(dd, @Const(q), @Const(qmask),
-                                             @Const(argmax_u), @Const(δ), Td)
+@kernel function unified_pair_atomic_kernel!(dq, dd, @Const(q), @Const(d),
+                                             @Const(qmask), @Const(argmax_u),
+                                             @Const(δ), Td)
     k, t = @index(Global, NTuple)
     @inbounds if qmask[t]
         u = Int(argmax_u[t])
         if 1 <= u <= Td
-            @atomic dd[k, u] += δ[1] * q[k, t]
+            δt = δ[1]
+            dq[k, t] = δt * d[k, u]
+            @atomic dd[k, u] += δt * q[k, t]
         end
     end
 end
 
-@kernel function scatter_paired_atomic_kernel!(dD, @Const(Q), @Const(qmask),
-                                               @Const(args), @Const(Δ),
-                                               @Const(inv_n), Td)
+@kernel function unified_paired_atomic_kernel!(dQ, dD, @Const(Q), @Const(D),
+                                               @Const(qmask), @Const(args),
+                                               @Const(Δ), @Const(inv_n), Td)
     k, t, b = @index(Global, NTuple)
     @inbounds if qmask[t, b]
         u = Int(args[t, b])
         if 1 <= u <= Td
-            @atomic dD[k, u, b] += (Δ[b] * inv_n[b]) * Q[k, t, b]
+            δt = Δ[b] * inv_n[b]
+            dQ[k, t, b] = δt * D[k, u, b]
+            @atomic dD[k, u, b] += δt * Q[k, t, b]
         end
     end
 end
 
-@kernel function scatter_inbatch_atomic_kernel!(dD, @Const(Q), @Const(qmask),
-                                                @Const(args), @Const(Δ),
-                                                @Const(inv_n), Td, Bd)
+@kernel function unified_inbatch_atomic_kernel!(dQ, dD, @Const(Q), @Const(D),
+                                                @Const(qmask), @Const(args),
+                                                @Const(Δ), @Const(inv_n), Td, Bd)
     k, t, i = @index(Global, NTuple)
+    acc = zero(eltype(dQ))
     @inbounds if qmask[t, i]
         δscale = inv_n[i]
+        qkt = Q[k, t, i]
         for j in 1:Bd
             u = Int(args[t, j, i])
             if 1 <= u <= Td
-                @atomic dD[k, u, j] += (Δ[j, i] * δscale) * Q[k, t, i]
+                δt = Δ[j, i] * δscale
+                acc += δt * D[k, u, j]
+                @atomic dD[k, u, j] += δt * qkt
             end
         end
     end
+    @inbounds dQ[k, t, i] = acc
 end
 
-@kernel function scatter_candidates_atomic_kernel!(dG, @Const(Q), @Const(idxs),
-                                                   @Const(qmask), @Const(args),
-                                                   @Const(Δ), @Const(inv_n),
-                                                   Td, C, N)
+@kernel function unified_candidates_atomic_kernel!(dQ, dG, @Const(Q), @Const(gallery),
+                                                   @Const(idxs), @Const(qmask),
+                                                   @Const(args), @Const(Δ),
+                                                   @Const(inv_n), Td, C, N)
     k, t, b = @index(Global, NTuple)
+    acc = zero(eltype(dQ))
     @inbounds if qmask[t, b]
         δscale = inv_n[b]
+        qkt = Q[k, t, b]
         for c in 1:C
             j = Int(idxs[c, b])
             (1 <= j <= N) || continue
             u = Int(args[t, c, b])
             if 1 <= u <= Td
-                @atomic dG[k, u, j] += (Δ[c, b] * δscale) * Q[k, t, b]
+                δt = Δ[c, b] * δscale
+                acc += δt * gallery[k, u, j]
+                @atomic dG[k, u, j] += δt * qkt
             end
         end
     end
+    @inbounds dQ[k, t, b] = acc
 end
 
 # ---- InvGrid CSR build (Alg. 3 counting sort) --------------------------------

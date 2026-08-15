@@ -36,20 +36,23 @@ function paired_pullback_ka(backend, Δ::AbstractVector{T}, Q, D, qmask, args,
     dD = zeros_like(D)
     dim, Tq, B = size(Q)
     Td = size(D, 2)
-    launch!(gather_paired_kernel!, backend, (dim, Tq, B),
-            dQ, D, qmask, args, Δ, inv_n, Td)
-    scatter_paired!(mode, backend, dD, Q, qmask, args, Δ, inv_n)
+    paired_apply_pullback!(mode, backend, dQ, dD, Q, D, qmask, args, Δ, inv_n,
+                           dim, Tq, B, Td)
     finish!(backend)
     dQ, dD
 end
 
-scatter_paired!(::AtomicUnified, backend, dD, Q, qmask, args, Δ, inv_n) =
-    launch!(scatter_paired_atomic_kernel!, backend, (size(Q, 1), size(Q, 2), size(Q, 3)),
-            dD, Q, qmask, args, Δ, inv_n, size(dD, 2))
+function paired_apply_pullback!(::AtomicUnified, backend, dQ, dD, Q, D, qmask,
+                                args, Δ, inv_n, dim, Tq, B, Td)
+    launch!(unified_paired_atomic_kernel!, backend, (dim, Tq, B),
+            dQ, dD, Q, D, qmask, args, Δ, inv_n, Td)
+    nothing
+end
 
-function scatter_paired!(::InvGrid, backend, dD, Q, qmask, args, Δ, inv_n)
-    Td = size(dD, 2)
-    Tq, B = size(Q, 2), size(Q, 3)
+function paired_apply_pullback!(::InvGrid, backend, dQ, dD, Q, D, qmask, args,
+                                Δ, inv_n, dim, Tq, B, Td)
+    launch!(gather_paired_kernel!, backend, (dim, Tq, B),
+            dQ, D, qmask, args, Δ, inv_n, Td)
     row_ptr, col_idx = build_paired_csr(backend, Q, args, qmask, Td, Tq, B)
     launch!(scatter_paired_csr_kernel!, backend, (size(dD, 1), Td, B),
             dD, Q, row_ptr, col_idx, Δ, inv_n, Tq)
@@ -101,20 +104,23 @@ function inbatch_pullback_ka(backend, Δ::AbstractMatrix{T}, Q, D, qmask, args,
     dD = zeros_like(D)
     dim, Tq, Bq = size(Q)
     Td, Bd = size(D, 2), size(D, 3)
-    launch!(gather_inbatch_kernel!, backend, (dim, Tq, Bq),
-            dQ, D, qmask, args, Δ, inv_n, Td, Bd)
-    scatter_inbatch!(mode, backend, dD, Q, qmask, args, Δ, inv_n)
+    inbatch_apply_pullback!(mode, backend, dQ, dD, Q, D, qmask, args, Δ, inv_n,
+                            dim, Tq, Bq, Td, Bd)
     finish!(backend)
     dQ, dD
 end
 
-scatter_inbatch!(::AtomicUnified, backend, dD, Q, qmask, args, Δ, inv_n) =
-    launch!(scatter_inbatch_atomic_kernel!, backend, (size(Q, 1), size(Q, 2), size(Q, 3)),
-            dD, Q, qmask, args, Δ, inv_n, size(dD, 2), size(dD, 3))
+function inbatch_apply_pullback!(::AtomicUnified, backend, dQ, dD, Q, D, qmask,
+                                 args, Δ, inv_n, dim, Tq, Bq, Td, Bd)
+    launch!(unified_inbatch_atomic_kernel!, backend, (dim, Tq, Bq),
+            dQ, dD, Q, D, qmask, args, Δ, inv_n, Td, Bd)
+    nothing
+end
 
-function scatter_inbatch!(::InvGrid, backend, dD, Q, qmask, args, Δ, inv_n)
-    Td, Bd = size(dD, 2), size(dD, 3)
-    Tq, Bq = size(Q, 2), size(Q, 3)
+function inbatch_apply_pullback!(::InvGrid, backend, dQ, dD, Q, D, qmask, args,
+                                 Δ, inv_n, dim, Tq, Bq, Td, Bd)
+    launch!(gather_inbatch_kernel!, backend, (dim, Tq, Bq),
+            dQ, D, qmask, args, Δ, inv_n, Td, Bd)
     row_ptr, col_idx = build_inbatch_csr(backend, Q, args, qmask, Td, Tq, Bq, Bd)
     launch!(scatter_inbatch_csr_kernel!, backend, (size(dD, 1), Td, Bd),
             dD, Q, row_ptr, col_idx, Δ, inv_n, Tq, Bq)
@@ -172,23 +178,24 @@ function candidates_pullback_ka(backend, Δ::AbstractMatrix{T}, Q, gallery, idxs
     dim, Tq, B = size(Q)
     Td = size(gallery, 2)
     C, N = size(idx, 1), size(gallery, 3)
-    launch!(gather_candidates_kernel!, backend, (dim, Tq, B),
-            dQ, gallery, idx, qmask, args, Δ, inv_n, Td, C, N)
-    scatter_candidates!(mode, backend, dG, Q, idx, qmask, args, Δ, inv_n)
+    candidates_apply_pullback!(mode, backend, dQ, dG, Q, gallery, idx, qmask,
+                               args, Δ, inv_n, dim, Tq, B, Td, C, N)
     finish!(backend)
     dQ, dG
 end
 
-scatter_candidates!(::AtomicUnified, backend, dG, Q, idxs, qmask, args, Δ, inv_n) =
-    launch!(scatter_candidates_atomic_kernel!, backend,
-            (size(Q, 1), size(Q, 2), size(Q, 3)),
-            dG, Q, idxs, qmask, args, Δ, inv_n, size(dG, 2), size(idxs, 1), size(dG, 3))
+function candidates_apply_pullback!(::AtomicUnified, backend, dQ, dG, Q, gallery,
+                                    idx, qmask, args, Δ, inv_n, dim, Tq, B, Td, C, N)
+    launch!(unified_candidates_atomic_kernel!, backend, (dim, Tq, B),
+            dQ, dG, Q, gallery, idx, qmask, args, Δ, inv_n, Td, C, N)
+    nothing
+end
 
-function scatter_candidates!(::InvGrid, backend, dG, Q, idxs, qmask, args, Δ, inv_n)
-    Td, N = size(dG, 2), size(dG, 3)
-    Tq, B = size(Q, 2), size(Q, 3)
-    C = size(idxs, 1)
-    row_ptr, col_idx = build_candidates_csr(backend, Q, idxs, args, qmask, Td, N, Tq, C, B)
+function candidates_apply_pullback!(::InvGrid, backend, dQ, dG, Q, gallery, idx,
+                                    qmask, args, Δ, inv_n, dim, Tq, B, Td, C, N)
+    launch!(gather_candidates_kernel!, backend, (dim, Tq, B),
+            dQ, gallery, idx, qmask, args, Δ, inv_n, Td, C, N)
+    row_ptr, col_idx = build_candidates_csr(backend, Q, idx, args, qmask, Td, N, Tq, C, B)
     launch!(scatter_candidates_csr_kernel!, backend, (size(dG, 1), Td, N),
             dG, Q, row_ptr, col_idx, Δ, inv_n, Td, Tq, C)
     nothing

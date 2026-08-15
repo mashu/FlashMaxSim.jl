@@ -62,3 +62,6 @@ function count_true_length1(backend, mask::AbstractVector{Bool}, ::Type{T}) wher
 end
 
 query_count(qmask::AbstractVector{Bool}) = max(Int(sum(qmask)), 1)
+
+"""Whether this backend launches WMMA tensor-core scans for `T` features."""
+tensor_cores_active(::Backend, ::Type) = false

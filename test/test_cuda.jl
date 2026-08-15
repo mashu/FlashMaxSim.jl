@@ -115,4 +115,34 @@
     G2 = randn(T, dim2, Td2, 3)
     @test Array(maxsim(CuArray(Q2), CuArray(G2), CuArray(idxs2))) ≈
           maxsim(Q2, G2, idxs2) rtol=1e-5 atol=1e-5
+
+    # packed cu_seqlens + INT8 on device
+    docs = [randn(T, dim, 9), randn(T, dim, 0), randn(T, dim, 6)]
+    packed, cu = pack_docs(docs)
+    pg, cug = CuArray(packed), CuArray(cu)
+    qg2 = CuArray(q)
+    s_pack = Array(maxsim(qg2, pg, cug))
+    @test s_pack ≈ maxsim(q, packed, cu) rtol=1e-5 atol=1e-5
+    @test s_pack[2] == zero(T)
+    gq_p, gP_p = gradient((q, p) -> sum(maxsim(q, p, cug)), qg2, pg)
+    @test gq_p isa CuArray && gP_p isa CuArray
+    cfg_inv = MaxSim{T}(T(-1.0f4), false, InvGrid())
+    @test_throws ArgumentError gradient((q, p) -> sum(maxsim(cfg_inv, q, p, cug,
+                                                            qmg)), qg2, pg)
+
+    d_idx = quantize_int8_symmetric(d)
+    d_idx_g = Int8Index(CuArray(d_idx.codes), CuArray(d_idx.scales))
+    s8g = maxsim(qg, d_idx_g, qmg, dmg)
+    @test only(Array(s8g)) ≈ maxsim(q, d_idx, qm, dm) rtol=1e-5 atol=1e-5
+
+    # Float16 WMMA vs host (tensor cores when sm ≥ 7.0)
+    q16, d16 = Float16.(q), Float16.(d)
+    s16_cpu = maxsim(q16, d16)
+    q16g, d16g = CuArray(q16), CuArray(d16)
+    s16_gpu = maxsim(q16g, d16g)
+    @test s16_gpu isa CuArray{Float16}
+    @test only(Array(s16_gpu)) ≈ s16_cpu rtol=5e-2 atol=5e-2
+    @test FlashMaxSim.tensor_cores_active(KernelAbstractions.get_backend(q16g), Float16)
+    Q16, D16 = Float16.(Q), Float16.(D)
+    @test Array(maxsim(CuArray(Q16), CuArray(D16))) ≈ maxsim(Q16, D16) rtol=5e-2 atol=5e-2
 end

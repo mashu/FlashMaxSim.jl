@@ -20,20 +20,20 @@ Pair, paired-batch, and candidate scoring fuse the per-token argmax
 (paper Algorithm 1) without storing a dense query-token × document-token
 matrix. In-batch contrastive scoring (the ColBERT training layout) computes
 tiled GEMM chunks of `D'Q` then a light argmax accumulate. Training keeps
-only argmax indices and aggregates gradients with atomic-unified scatter, or
-inverse-grid CSR on CPU (paper §4.2 / Algorithm 3). The GPU `InvGrid` path
-is a destination-parallel scan over sources, not a constructed grid. Exact
-up to floating-point evaluation order (paper Prop. 1).
+only argmax indices and aggregates gradients with a fused atomic-unified
+scatter (one launch; Q hoisted), or inverse-grid CSR (paper §4.2 /
+Algorithm 3). Exact up to floating-point evaluation order (paper Prop. 1).
 
 Forward and backward run on the **same KernelAbstractions backend** as the
-features (CPU `Array` uses BLAS-tiled GEMM; CUDA / ROCm / Metal use fused
-kernels). Scores, argmax tape, and cotangents stay on-device — no host
-round-trips of `Q` / `D`.
+features (CPU `Array` uses BLAS-tiled GEMM; CUDA / ROCm / Metal use SRAM-tiled
+kernels). `CuArray{Float16}` pair / paired scans use WMMA tensor cores when
+the device is sm ≥ 7.0. Scores, argmax tape, and cotangents stay on-device —
+no host round-trips of `Q` / `D`.
 
 **Contract:** features and masks must be colocated (same KA backend). Host
 `BitArray` masks are allowed with `Array` features; GPU features need
-device masks (`true_mask` / `similar`). Candidate index matrices are copied
-onto the feature backend when needed.
+device masks (`true_mask` / `similar`). Candidate index matrices must already
+be on the feature backend.
 
 `neg` fills invalid candidate index slots only. It is not a clamp on token
 similarities; empty documents contribute `0`.
@@ -74,6 +74,15 @@ S = cfg(Q, D, InBatch())
 gallery = randn(Float32, 64, 48, 100)
 idxs = rand(1:100, 16, 8)
 Sc = cfg(Q, gallery, idxs)
+
+# packed documents (no padding): 1-based cu_seqlens
+docs = [randn(Float32, 64, 40), randn(Float32, 64, 12), randn(Float32, 64, 55)]
+packed, cu = pack_docs(docs)
+s_pack = maxsim(q, packed, cu)          # (B,)
+
+# INT8 index (quantize D once; Q quantized on the fly; forward-only)
+d8 = quantize_int8_symmetric(d)
+s8 = maxsim(q, d8)
 ```
 
 Gradients (Zygote / Flux) use a ChainRules `rrule` — sparse argmax tape, no
@@ -90,17 +99,19 @@ s = maxsim(qg, dg)
 | Paper | This package |
 |:------|:-------------|
 | Alg. 1 materialized `S` then max | `maxsim_dense` (oracle only) |
-| Alg. 2 fused forward (no `S` in HBM) | `pair_forward` / paired / candidates (BLAS tiles on `Array`; KA token kernel otherwise) |
+| Alg. 2 fused forward (no `S` in HBM) | SRAM-tiled KA kernels; WMMA `tl.dot` equivalent for `CuArray{Float16}` |
 | In-batch `D'Q` tiles | `inbatch_forward` materializes GEMM chunks (`INBATCH_TILE_BYTES`), not Alg. 2 |
 | Prop. 1 exactness | tests vs `maxsim_dense` |
 | §4.2 Eq. 2–3 sparse grads | ChainRules `rrule` on the feature backend |
-| Atomic-unified `∇D` | `backward = AtomicUnified()` (`@atomic` on GPU; paper's low-contention fallback) |
-| Inverse-grid `∇D` (Alg. 3) | `backward = InvGrid()` — CSR on CPU; dest-parallel scan on GPU (same sum, not Alg. 3) |
+| Atomic-unified `∇D` | `backward = AtomicUnified()` — fused ∇Q+∇D, one D load, Q hoisted |
+| Inverse-grid `∇D` (Alg. 3) | `backward = InvGrid()` — CSR on every KA backend |
+| Packed `cu_seqlens` | `pack_docs` / `pack_pairs`; `maxsim(q, packed, cu)` |
+| INT8 deferred dequant | `quantize_int8_symmetric` / `Int8Index` (forward-only) |
 | In-batch / candidate scoring | `InBatch`, index-matrix layouts |
 
-Not ported: INT8 tensor-core path, split-`d`, Chamfer, CUDA shared-memory
-document tiling. Exact FP MaxSim scores and sparse AD structure match the
-paper operator used for ColBERT training / reranking.
+Not ported: split-`d` for `d>512`, Chamfer, INT8 tensor-core WMMA. Exact FP
+MaxSim scores and sparse AD structure match the paper operator used for
+ColBERT training / reranking.
 
 ## Design
 

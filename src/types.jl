@@ -7,7 +7,7 @@ Concrete singletons: [`AtomicUnified`](@ref), [`InvGrid`](@ref).
 """
 abstract type BackwardStrategy end
 
-"""Source-parallel ``∇D`` scatter (atomics on GPU; sequential on CPU)."""
+"""Fused ∇Q+∇D scatter (atomics on GPU; sequential on CPU). One D load serves both grads."""
 struct AtomicUnified <: BackwardStrategy end
 
 """Destination-owned ``∇D`` via inverse-grid CSR (paper Algorithm 3) on every KA backend."""

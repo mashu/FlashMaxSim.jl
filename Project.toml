@@ -16,6 +16,12 @@ LinearAlgebra = "1"
 Zygote = "0.7"
 julia = "1.10"
 
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
+[extensions]
+FlashMaxSimCUDAExt = "CUDA"
+
 [extras]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"

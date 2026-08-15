@@ -166,3 +166,129 @@ end
               idxs::AbstractMatrix{<:Integer},
               qmask::AbstractMatrix{Bool}, dmask::AbstractMatrix{Bool}) =
     maxsim(cfg, Q, gallery, idxs, qmask, dmask)
+
+# ---- packed cu_seqlens (one query vs B ragged docs) --------------------------
+
+"""
+    maxsim(q, packed, cu; ...) -> Vector
+    maxsim(q, packed, cu, qmask; ...)
+    maxsim(cfg::MaxSim, q, packed, cu, qmask)
+
+Packed-document MaxSim. `packed` is `(dim, sum Ld_i)` and `cu` is 1-based CSR
+of length `B+1` (`pack_docs`). Returns `(B,)` with
+`out[b] = MaxSim(q, packed[:, cu[b]:(cu[b+1]-1)])`. Python 0-based
+`cu_seqlens` converts with `cu .+ 1`. GPU `InvGrid` is not supported.
+"""
+maxsim(q::AbstractMatrix{T}, packed::AbstractMatrix{T},
+       cu::AbstractVector{<:Integer}; kwargs...) where {T<:AbstractFloat} =
+    maxsim(q, packed, cu, true_mask(q, size(q, 2)); kwargs...)
+
+function maxsim(q::AbstractMatrix{T}, packed::AbstractMatrix{T},
+                cu::AbstractVector{<:Integer}, qmask::AbstractVector{Bool};
+                neg::Real = T(-1.0f4), normalize::Bool = false,
+                backward = AtomicUnified()) where {T<:AbstractFloat}
+    maxsim(MaxSim{T}(neg, normalize, backward), q, packed, cu, qmask)
+end
+
+function maxsim(cfg::MaxSim{T}, q::AbstractMatrix{T}, packed::AbstractMatrix{T},
+                cu::AbstractVector{<:Integer},
+                qmask::AbstractVector{Bool}) where {T<:AbstractFloat}
+    scores, _ = packed_forward(q, packed, cu, qmask, cfg.neg)
+    scores_n, _ = packed_finalize(scores, qmask, cfg.normalize)
+    scores_n
+end
+
+(cfg::MaxSim)(q::AbstractMatrix, packed::AbstractMatrix, cu::AbstractVector{<:Integer}) =
+    maxsim(cfg, q, packed, cu, true_mask(q, size(q, 2)))
+(cfg::MaxSim)(q::AbstractMatrix, packed::AbstractMatrix, cu::AbstractVector{<:Integer},
+              qmask::AbstractVector{Bool}) =
+    maxsim(cfg, q, packed, cu, qmask)
+
+# ---- varlen pairs (ragged query and document per pair) -----------------------
+
+"""
+    maxsim(Qp, Dp, cu_q, cu_d; ...) -> Vector
+    maxsim(cfg::MaxSim, Qp, Dp, cu_q, cu_d)
+
+Variable-length paired MaxSim (`pack_pairs`). `cu_q` / `cu_d` are 1-based CSR.
+Returns `(N,)` with `out[n] = MaxSim(Qp[:, cu_q[n]:(cu_q[n+1]-1)],
+Dp[:, cu_d[n]:(cu_d[n+1]-1)])`. GPU `InvGrid` is not supported.
+"""
+function maxsim(Qp::AbstractMatrix{T}, Dp::AbstractMatrix{T},
+                cu_q::AbstractVector{<:Integer}, cu_d::AbstractVector{<:Integer};
+                neg::Real = T(-1.0f4), normalize::Bool = false,
+                backward = AtomicUnified()) where {T<:AbstractFloat}
+    maxsim(MaxSim{T}(neg, normalize, backward), Qp, Dp, cu_q, cu_d)
+end
+
+function maxsim(cfg::MaxSim{T}, Qp::AbstractMatrix{T}, Dp::AbstractMatrix{T},
+                cu_q::AbstractVector{<:Integer},
+                cu_d::AbstractVector{<:Integer}) where {T<:AbstractFloat}
+    scores, _ = varlen_forward(Qp, Dp, cu_q, cu_d, cfg.neg)
+    scores_n, _ = varlen_finalize(scores, cu_q, cfg.normalize)
+    scores_n
+end
+
+(cfg::MaxSim)(Qp::AbstractMatrix, Dp::AbstractMatrix,
+              cu_q::AbstractVector{<:Integer}, cu_d::AbstractVector{<:Integer}) =
+    maxsim(cfg, Qp, Dp, cu_q, cu_d)
+
+# ---- INT8 index (forward-only deferred dequant) ------------------------------
+
+"""
+    maxsim(q, d::Int8Index; ...)
+    maxsim(Q, D::Int8Index; ...)
+
+INT8 MaxSim with on-the-fly query quantization and deferred dequant
+(`⟨q,d⟩ = qscale * dscale * ⟨qcode, dcode⟩_Int32`). Forward-only.
+"""
+maxsim(q::AbstractMatrix{T}, d::Int8Index{<:AbstractMatrix{Int8}};
+       kwargs...) where {T<:AbstractFloat} =
+    maxsim(q, d, true_mask(q, size(q, 2)), true_mask(d.codes, size(d.codes, 2)); kwargs...)
+
+function maxsim(q::AbstractMatrix{T}, d::Int8Index{<:AbstractMatrix{Int8}},
+                qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool};
+                neg::Real = T(-1.0f4), normalize::Bool = false,
+                backward = AtomicUnified()) where {T<:AbstractFloat}
+    maxsim(MaxSim{T}(neg, normalize, backward), q, d, qmask, dmask)
+end
+
+function maxsim(cfg::MaxSim{T}, q::AbstractMatrix{T}, d::Int8Index{<:AbstractMatrix{Int8}},
+                qmask::AbstractVector{Bool},
+                dmask::AbstractVector{Bool}) where {T<:AbstractFloat}
+    score, _ = int8_pair_forward(q, d, qmask, dmask)
+    pair_finalize(score, qmask, cfg.normalize)[1]
+end
+
+(cfg::MaxSim)(q::AbstractMatrix, d::Int8Index{<:AbstractMatrix{Int8}}) =
+    maxsim(cfg, q, d, true_mask(q, size(q, 2)), true_mask(d.codes, size(d.codes, 2)))
+(cfg::MaxSim)(q::AbstractMatrix, d::Int8Index{<:AbstractMatrix{Int8}},
+              qmask::AbstractVector{Bool}, dmask::AbstractVector{Bool}) =
+    maxsim(cfg, q, d, qmask, dmask)
+
+maxsim(Q::AbstractArray{T,3}, D::Int8Index{<:AbstractArray{Int8,3}};
+       kwargs...) where {T<:AbstractFloat} =
+    maxsim(Q, D, true_mask(Q, size(Q, 2), size(Q, 3)),
+           true_mask(D.codes, size(D.codes, 2), size(D.codes, 3)); kwargs...)
+
+function maxsim(Q::AbstractArray{T,3}, D::Int8Index{<:AbstractArray{Int8,3}},
+                qmask::AbstractMatrix{Bool}, dmask::AbstractMatrix{Bool};
+                neg::Real = T(-1.0f4), normalize::Bool = false,
+                backward = AtomicUnified()) where {T<:AbstractFloat}
+    maxsim(MaxSim{T}(neg, normalize, backward), Q, D, qmask, dmask)
+end
+
+function maxsim(cfg::MaxSim{T}, Q::AbstractArray{T,3},
+                D::Int8Index{<:AbstractArray{Int8,3}},
+                qmask::AbstractMatrix{Bool},
+                dmask::AbstractMatrix{Bool}) where {T<:AbstractFloat}
+    scores, _ = int8_paired_forward(Q, D, qmask, dmask)
+    cfg.normalize ? length_normalize(scores, qmask) : scores
+end
+
+(cfg::MaxSim)(Q::AbstractArray{<:Any,3}, D::Int8Index{<:AbstractArray{Int8,3}}) =
+    maxsim(cfg, Q, D, true_mask(Q, size(Q, 2), size(Q, 3)),
+           true_mask(D.codes, size(D.codes, 2), size(D.codes, 3)))
+(cfg::MaxSim)(Q::AbstractArray{<:Any,3}, D::Int8Index{<:AbstractArray{Int8,3}},
+              qmask::AbstractMatrix{Bool}, dmask::AbstractMatrix{Bool}) =
+    maxsim(cfg, Q, D, qmask, dmask)
